@@ -6,7 +6,7 @@ from scipy.stats import norm
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="SPI Forecast Tool", layout="wide")
 
-st.title("🚛 SPI Capacity Planning & Forecast")
+st.title("🚛 Workpackage Request Estimation")
 st.markdown("Use the sidebar to simulate project scope, timeline, and resource bottlenecks.")
 
 # --- SIDEBAR INPUTS ---
@@ -160,4 +160,5 @@ m2.metric("Truck Peak Volume", f"{int(demand_truck)} IH")
 if missed > 0:
     m3.metric("Missed at RG", f"{int(missed)} IH", delta="Risk", delta_color="inverse")
 else:
+
     m3.metric("Status", "Success", delta="On Track")
