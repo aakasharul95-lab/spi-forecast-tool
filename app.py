@@ -4,17 +4,17 @@ import matplotlib.pyplot as plt
 from scipy.stats import norm
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="SPI Forecast Tool", layout="wide")
+st.set_page_config(page_title="Workpackage Request Estimation", layout="wide")
 
 st.title("🚛 Workpackage Request Estimation")
 st.markdown("Use the sidebar to simulate project scope, timeline, and resource bottlenecks.")
 
 # --- SIDEBAR INPUTS ---
 st.sidebar.header("1. Scope & Dates")
-total_scope = st.sidebar.number_input("Total Infoheaders", value=55, step=5)
-work_start_week = st.sidebar.number_input("Work Start Week (YYWW)", value=2501)
-truck_arrival = st.sidebar.number_input("Truck Arrival (YYWW)", value=2552)
-truck_departure = st.sidebar.number_input("Truck Departure (YYWW)", value=2603)
+total_scope = st.sidebar.number_input("Total Infoheaders", value=1500, step=50)
+work_start_week = st.sidebar.number_input("Work Start Week (YYWW)", value=2615)
+truck_arrival = st.sidebar.number_input("Truck Arrival (YYWW)", value=2625)
+truck_departure = st.sidebar.number_input("Truck Departure (YYWW)", value=2737)
 
 st.sidebar.header("2. Work Split")
 pre_work_pct = st.sidebar.slider("Pre-Work %", 0.0, 0.5, 0.10)
@@ -25,27 +25,32 @@ se_count = st.sidebar.number_input("SE Headcount", value=3)
 ih_per_se = st.sidebar.number_input("IH per SE/Week", value=5)
 
 st.sidebar.header("4. Milestones")
-fdg_week = st.sidebar.number_input("FDG Week", value=2532)
+fdg_week = st.sidebar.number_input("FDG Week", value=2515)
 c_build_week = st.sidebar.number_input("C-Build Week", value=2548)
-fig_week = st.sidebar.number_input("FIG Week", value=2605)
-rg_week = st.sidebar.number_input("RG Deadline", value=2620)
+fig_week = st.sidebar.number_input("FIG Week", value=2639)
+rg_week = st.sidebar.number_input("RG Deadline", value=2724)
 
 # --- LOGIC ENGINE ---
 max_capacity = se_count * ih_per_se
 project_milestones = {"FDG": fdg_week, "C-Build": c_build_week, "FIG": fig_week, "RG": rg_week}
 
-# Dynamic Start Date Logic
-all_dates = [work_start_week, truck_arrival, fdg_week, c_build_week, 2530]
-earliest = min(all_dates)
-if earliest % 100 <= 2:
-    start_week = ((earliest // 100) - 1) * 100 + 50
-else:
-    start_week = earliest - 2
+# 1. Dynamic Start Date Logic
+# Find the absolute earliest date to start the graph
+all_input_dates = [work_start_week, truck_arrival, fdg_week, c_build_week, 2530]
+earliest_date = min(all_input_dates)
 
-# Duration Logic
-end_year_diff = (rg_week // 100) - (start_week // 100)
-end_week_diff = (rg_week % 100) - (start_week % 100)
-total_duration = (end_year_diff * 52) + end_week_diff + 10
+if earliest_date % 100 <= 2:
+    start_week = ((earliest_date // 100) - 1) * 100 + 50
+else:
+    start_week = earliest_date - 2
+
+# 2. Dynamic End Date Logic (THE FIX)
+# Find the absolute latest date to end the graph (Truck Dep or RG)
+latest_date = max(rg_week, truck_departure)
+
+end_year_diff = (latest_date // 100) - (start_week // 100)
+end_week_diff = (latest_date % 100) - (start_week % 100)
+total_duration = (end_year_diff * 52) + end_week_diff + 15 # Add 15 weeks buffer
 weeks_to_show = max(60, total_duration)
 
 def generate_yyww_timeline(start, duration):
@@ -73,10 +78,11 @@ try:
     depart_idx = df[df['Week'] == truck_departure].index[0]
     rg_idx = df[df['Week'] == rg_week].index[0]
     start_idx = df[df['Week'] == work_start_week].index[0]
+    
     truck_center_idx = (arrival_idx + depart_idx) / 2
     sigma_idx = (depart_idx - arrival_idx) / 5
 except IndexError:
-    st.error("⚠️ Date Mismatch: Ensure all input dates fall within a realistic project timeline.")
+    st.error(f"⚠️ Date Mismatch: The generated timeline runs from {weeks[0]} to {weeks[-1]}. One of your dates is outside this range.")
     st.stop()
 
 # Flow Calculations
@@ -87,7 +93,12 @@ demand_truck = total_scope - (demand_pre + demand_post)
 dur_pre = arrival_idx - start_idx
 rate_pre = demand_pre / dur_pre if dur_pre > 0 else 0
 dur_post = rg_idx - depart_idx
-rate_post = demand_post / dur_post if dur_post > 0 else 0
+# If truck leaves AFTER RG, post-work rate is 0 or handled differently. 
+# Here we clamp it to prevent division by zero or negative time.
+if dur_post <= 0:
+    rate_post = 0 # Cannot do post-work if truck leaves after deadline
+else:
+    rate_post = demand_post / dur_post
 
 raw_bell = []
 for i in range(len(df)):
@@ -100,6 +111,7 @@ backlog = 0
 for i in range(len(df)):
     arriving = 0
     if i >= start_idx and i <= arrival_idx: arriving += rate_pre
+    # Only add post-work if we are past departure AND before RG
     if i > depart_idx and i <= rg_idx: arriving += rate_post
     if total_bell > 0: arriving += (raw_bell[i] / total_bell) * demand_truck
     
@@ -117,6 +129,7 @@ ax.bar(res_df['Index'], res_df['Sent'], color='#005f9e', alpha=0.9, label='Team 
 ax.plot(res_df['Index'], res_df['Gen'], color='#333333', linestyle='--', linewidth=3, label='Work Generated')
 
 max_y = max(res_df['Gen'].max(), max_capacity)
+if max_y == 0: max_y = 10 # Prevent flat graph crash
 ax.set_ylim(0, max_y * 1.6)
 
 bbox = dict(boxstyle="round,pad=0.3", fc="white", ec="none", alpha=0.85)
@@ -156,9 +169,8 @@ st.pyplot(fig)
 # --- METRICS ROW ---
 m1, m2, m3 = st.columns(3)
 m1.metric("Early Work Volume", f"{int(demand_pre)} IH")
-m2.metric("Truck Peak Volume", f"{int(demand_truck)} IH")
+m2.metric("Truck Phase Volume", f"{int(demand_truck)} IH")
 if missed > 0:
     m3.metric("Missed at RG", f"{int(missed)} IH", delta="Risk", delta_color="inverse")
 else:
-
     m3.metric("Status", "Success", delta="On Track")
