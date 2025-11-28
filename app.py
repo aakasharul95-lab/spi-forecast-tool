@@ -177,60 +177,57 @@ else:
 
 import time
 
-# --- HIDDEN EASTER EGG (The Combo Version) ---
+# --- 1. SETUP SESSION STATE ---
 if 'egg_counter' not in st.session_state:
     st.session_state.egg_counter = 0
 
-# The hidden trigger button (labeled as a tiny dot)
-egg_btn = st.sidebar.button("🥚")
-
-if egg_btn:
+# --- 2. DEFINE THE CLICK ACTION (The Callback) ---
+def click_egg():
     st.session_state.egg_counter += 1
-    
-    # TRIGGER ON 3rd CLICK
-    if st.session_state.egg_counter == 3:
-        
-        # 1. Fake Calculation
-        with st.spinner("🔄 RE-CALCULATING INTELLIGENCE ALGORITHMS..."):
-            time.sleep(2.0)
-        
-        # 2. Party Time
-        st.balloons()
-        
-        # 3. The "Savage" Modal
-        with st.expander("🚨 SYSTEM DEFINITION UPDATE", expanded=True):
-            
-            # The "AI" Definition (Option 1)
-            st.markdown("""
-                ### 🤖 ACRONYM UPDATE
-                The system has officially redefined **'AI'**.
-                <br>It no longer stands for *Artificial Intelligence*.
-                <br>It now stands for **Aakash Intelligence** (Supreme Logic).
-            """, unsafe_allow_html=True)
-            
-            st.divider()
-            
-            # The "Stats" Roast (Option 2)
-            st.markdown("### 📊 FINAL QUIZ PERFORMANCE")
-            
-            col1, col2 = st.columns(2)
-            
-            # Aakash Stats
-            with col1:
-                st.success("🥇 **Aakash**")
-                st.caption("Status: Grandmaster")
-                st.write("Win Rate: **100%**")
-            
-            # Tobias Stats
-            with col2:
-                st.error("🎗️ **Tobias**")
-                st.caption("Status: Legacy Hardware")
-                st.write("Achievement: **Successfully breathed air.**")
-            
-            # Final funny note
-            st.info("System Conclusion: Tobias is strictly here for the vibes. 🌈")
 
-        # Reset counter
-        st.session_state.egg_counter = 0
+# --- 3. THE BUTTON ---
+# Note: We use 'on_click=click_egg' to ensure it counts reliably
+st.sidebar.button(".", on_click=click_egg)
+
+# --- 4. DEBUGGING (Optional: See if it works) ---
+# Uncomment the line below to see the number update on screen for testing
+# st.sidebar.write(f"Count: {st.session_state.egg_counter}")
+
+# --- 5. THE TRIGGER LOGIC ---
+if st.session_state.egg_counter >= 3:
+    
+    # Reset the counter immediately so it doesn't loop forever
+    st.session_state.egg_counter = 0
+    
+    # Run the Animation
+    with st.spinner("🔄 RE-CALCULATING INTELLIGENCE ALGORITHMS..."):
+        time.sleep(1.5)
+    
+    st.balloons()
+    
+    # Show the Message
+    with st.expander("🚨 SYSTEM DEFINITION UPDATE", expanded=True):
+        st.markdown("""
+            ### 🤖 ACRONYM UPDATE
+            The system has officially redefined **'AI'**.
+            <br>It no longer stands for *Artificial Intelligence*.
+            <br>It now stands for **Aakash Intelligence** (Supreme Logic).
+        """, unsafe_allow_html=True)
+        
+        st.divider()
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.success("🥇 **Aakash**")
+            st.caption("Status: Grandmaster")
+            st.write("Win Rate: **100%**")
+        
+        with col2:
+            st.error("🎗️ **Tobias**")
+            st.caption("Status: Legacy Hardware")
+            st.write("Achievement: **Successfully breathed air.**")
+            
+        st.info("System Conclusion: Tobias is strictly here for the vibes.")
+
 
 
