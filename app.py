@@ -194,7 +194,7 @@ st.sidebar.button(".", on_click=click_egg)
 # st.sidebar.write(f"Count: {st.session_state.egg_counter}")
 
 # --- 5. THE TRIGGER LOGIC ---
-if st.session_state.egg_counter >= 3:
+if st.session_state.egg_counter >= 5:
     
     # Reset the counter immediately so it doesn't loop forever
     st.session_state.egg_counter = 0
@@ -211,7 +211,7 @@ if st.session_state.egg_counter >= 3:
             ### 🤖 ACRONYM UPDATE
             The system has officially redefined **'AI'**.
             <br>It no longer stands for *Artificial Intelligence*.
-            <br>It now stands for **Aakash Intelligence** (Supreme Logic).
+            <br>It now stands for **Aakash Intelligence**.
         """, unsafe_allow_html=True)
         
         st.divider()
@@ -227,7 +227,8 @@ if st.session_state.egg_counter >= 3:
             st.caption("Status: Legacy Hardware")
             st.write("Achievement: **Successfully breathed air.**")
             
-        st.info("System Conclusion: Tobias is strictly here for the vibes.")
+        st.info("System Conclusion: Aakash is better than Tobias.")
+
 
 
 
