@@ -182,7 +182,7 @@ if 'egg_counter' not in st.session_state:
     st.session_state.egg_counter = 0
 
 # The hidden trigger button (labeled as a tiny dot)
-egg_btn = st.sidebar.button(" . ")
+egg_btn = st.sidebar.button("🥚")
 
 if egg_btn:
     st.session_state.egg_counter += 1
@@ -232,4 +232,5 @@ if egg_btn:
 
         # Reset counter
         st.session_state.egg_counter = 0
+
 
