@@ -187,7 +187,7 @@ def click_egg():
 
 # --- 3. THE BUTTON ---
 # Note: We use 'on_click=click_egg' to ensure it counts reliably
-st.sidebar.button("Version 0.01", on_click=click_egg)
+st.sidebar.button("Version 1.01", on_click=click_egg)
 
 # --- 4. DEBUGGING (Optional: See if it works) ---
 # Uncomment the line below to see the number update on screen for testing
@@ -228,6 +228,7 @@ if st.session_state.egg_counter >= 5:
             st.write("Achievement: **Successfully breathed air.**")
             
         st.info("System Conclusion: Aakash is better than Tobias.")
+
 
 
 
