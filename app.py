@@ -37,7 +37,7 @@ for i in range(num_trucks):
 st.sidebar.divider()
 st.sidebar.header("4. Phases")
 pre_work_pct = st.sidebar.slider("Pre-Work % ", 0.0, 0.5, 0.10)
-post_work_pct = st.sidebar.slider("Post-Work % )", 0.0, 0.5, 0.10, help="This work is distributed in the empty weeks BETWEEN trucks and AFTER the last truck.")
+post_work_pct = st.sidebar.slider("Post-Work % ", 0.0, 0.5, 0.10, help="This work is distributed in the empty weeks BETWEEN trucks and AFTER the last truck.")
 
 st.sidebar.header("5. Milestones")
 fdg_week = st.sidebar.number_input("FDG Week", value=2532)
@@ -280,6 +280,7 @@ The system has officially redefined **'AI'**.
             st.write("Achievement: **Successfully breathed air.**")
         
         st.info("System Conclusion: Aakash is better than Tobias in every imaginable way")
+
 
 
 
