@@ -13,13 +13,12 @@ st.markdown("Simulate capacity bottlenecks, **Multi-Truck Arrivals**, and **Rewo
 # 1. SIDEBAR CONFIGURATION
 # =========================================================
 st.sidebar.header("1. Global Scope")
-total_scope = st.sidebar.number_input("Total Infoheaders", value=50, step=10) # Updated default to match your screenshot
+total_scope = st.sidebar.number_input("Total Infoheaders", value=1500, step=50)
 work_start_week = st.sidebar.number_input("Work Start Week (YYWW)", value=2535)
 
 st.sidebar.header("2. Team Resources")
-se_count = st.sidebar.number_input("SE Headcount", value=50) # Updated to your screenshot
+se_count = st.sidebar.number_input("SE Headcount", value=3)
 ih_per_se = st.sidebar.number_input("IH per SE/Week", value=5)
-rework_rate = st.sidebar.slider("Rework Rate %", 0.0, 1.0, 1.00, help="Percentage of work rejected and redone.") # Updated to your screenshot
 
 st.sidebar.divider()
 st.sidebar.header("3. Truck Configuration")
@@ -28,8 +27,13 @@ num_trucks = st.sidebar.radio("Number of Trucks", [1, 2, 3], horizontal=True)
 trucks = []
 for i in range(num_trucks):
     with st.sidebar.expander(f"🚛 Truck {i+1} Details", expanded=True):
-        t_arr = st.number_input(f"T{i+1} Arrival (YYWW)", value=2545 + (i*10))
-        t_dep = st.number_input(f"T{i+1} Departure (YYWW)", value=2554 + (i*10)) # Updated default
+        # Default dates spaced out to avoid overlap
+        default_arr = 2545 + (i*10)
+        # Auto-correct default if it hits 53+
+        if default_arr % 100 > 52: default_arr = (default_arr // 100 + 1) * 100 + 1
+        
+        t_arr = st.number_input(f"T{i+1} Arrival (YYWW)", value=default_arr)
+        t_dep = st.number_input(f"T{i+1} Departure (YYWW)", value=t_arr + 8) # Default 8 weeks later
         t_weight = st.slider(f"T{i+1} Workload Weight", 1, 100, 100)
         trucks.append({"id": i+1, "arrival": t_arr, "departure": t_dep, "weight": t_weight})
 
@@ -50,26 +54,23 @@ rg_week = st.sidebar.number_input("RG Deadline", value=2620)
 max_capacity = se_count * ih_per_se
 project_milestones = {"FDG": fdg_week, "C-Build": c_build_week, "FIG": fig_week, "RG": rg_week}
 
-# --- Dynamic Timeline (THE FIX) ---
-# We gather EVERY date input to ensure the timeline covers them all
+# --- Dynamic Timeline ---
 all_dates = [work_start_week, fdg_week, c_build_week, fig_week, rg_week, 2530]
 for t in trucks:
     all_dates.extend([t['arrival'], t['departure']])
 
-# Find absolute min and max
 earliest_date = min(all_dates)
 latest_date = max(all_dates)
 
-# Buffer the start (2 weeks before earliest date)
 if earliest_date % 100 <= 2:
     start_week = ((earliest_date // 100) - 1) * 100 + 50
 else:
     start_week = earliest_date - 2
 
-# Calculate exact duration needed to cover the latest date
+# Calculate Duration covering year rollovers
 end_year_diff = (latest_date // 100) - (start_week // 100)
 end_week_diff = (latest_date % 100) - (start_week % 100)
-total_duration = (end_year_diff * 52) + end_week_diff + 10 # +10 weeks buffer at the end
+total_duration = (end_year_diff * 52) + end_week_diff + 12
 weeks_to_show = max(60, total_duration)
 
 def generate_yyww_timeline(start, duration):
@@ -97,24 +98,32 @@ try:
     start_idx = df[df['Week'] == work_start_week].index[0]
     
     for t in trucks:
-        # Robust lookup: if date not found (due to timeline edge case), clamp to limits
+        # Check if date exists, otherwise map to closest or 0
         if t['arrival'] in df['Week'].values:
             t['arr_idx'] = df[df['Week'] == t['arrival']].index[0]
         else:
-            t['arr_idx'] = 0 # Fallback
+            # Smart Fallback: If 2553 is entered, try 2601
+            alt_date = (t['arrival'] // 100 + 1) * 100 + 1
+            if alt_date in df['Week'].values:
+                t['arr_idx'] = df[df['Week'] == alt_date].index[0]
+            else:
+                t['arr_idx'] = 0 # Default to start if totally lost
             
         if t['departure'] in df['Week'].values:
             t['dep_idx'] = df[df['Week'] == t['departure']].index[0]
         else:
-            t['dep_idx'] = len(df) - 1 # Fallback
+            alt_dep = (t['departure'] // 100 + 1) * 100 + 1
+            if alt_dep in df['Week'].values:
+                t['dep_idx'] = df[df['Week'] == alt_dep].index[0]
+            else:
+                t['dep_idx'] = len(df) - 1
             
         t['center'] = (t['arr_idx'] + t['dep_idx']) / 2
-        # Avoid division by zero if arrival = departure
         span = t['dep_idx'] - t['arr_idx']
         t['sigma'] = span / 5 if span > 0 else 0.5
         
 except IndexError:
-    st.error("⚠️ Critical Date Error: Please ensure all dates follow YYWW format (e.g. 2530).")
+    st.error("⚠️ Critical Date Error: Please ensure all dates follow YYWW format (e.g. 2530). Don't use week 53.")
     st.stop()
 
 # --- Volume & Rates ---
@@ -149,8 +158,6 @@ for t in trucks:
 # --- Simulation Loop ---
 data = []
 backlog = 0
-rework_queue = 0
-total_rework = 0
 
 for i in range(len(df)):
     new_work = 0
@@ -163,15 +170,9 @@ for i in range(len(df)):
             new_work += (t['raw_curve'][i] / t['sum_curve']) * t['volume']
 
     # Process
-    pool = new_work + backlog + rework_queue
+    pool = new_work + backlog
     processed = min(pool, max_capacity)
-    
-    # Rework
-    rework_gen = processed * rework_rate
-    total_rework += rework_gen
-    
-    backlog = pool - processed + rework_gen
-    rework_queue = 0 
+    backlog = pool - processed
     
     data.append({"Index": i, "Gen": new_work, "Sent": processed, "Backlog": backlog})
 
@@ -198,9 +199,13 @@ bbox = dict(boxstyle="round,pad=0.3", fc="white", ec="none", alpha=0.85)
 colors_truck = ['green', 'blue', 'teal']
 for t in trucks:
     c = colors_truck[(t['id']-1) % 3]
+    # Arrival Label
     ax.axvline(t['arr_idx'], color=c, linestyle=':')
     ax.text(t['arr_idx'], max_y*(1.0 + 0.05*t['id']), f"T{t['id']} Arr", color=c, ha='center', fontweight='bold', bbox=bbox)
+    
+    # Departure Label (Restored!)
     ax.axvline(t['dep_idx'], color='orange', linestyle=':')
+    ax.text(t['dep_idx'], max_y*(1.0 + 0.05*t['id']), f"T{t['id']} Dep", color='orange', ha='center', fontweight='bold', bbox=bbox)
 
 ax.axvline(start_idx, color='blue', linestyle='-.')
 ax.text(start_idx, max_y*1.1, "Work Start", color='blue', ha='center', bbox=bbox)
@@ -230,14 +235,12 @@ ax.set_xticklabels(res_df['Week_Str'][::step], rotation=90)
 st.pyplot(fig)
 
 # Metrics
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Original Scope", f"{int(total_scope)}")
-c2.metric("Rework Generated", f"{int(total_rework)}")
-c3.metric("Effective Load", f"{int(total_scope + total_rework)}")
+c1, c2, c3 = st.columns(3)
+c1.metric("Total Scope", f"{int(total_scope)}")
 if missed > 0:
-    c4.metric("Missed at RG", f"{int(missed)}", delta="Risk", delta_color="inverse")
+    c2.metric("Missed at RG", f"{int(missed)}", delta="Risk", delta_color="inverse")
 else:
-    c4.metric("Status", "Success", delta="On Track")
+    c2.metric("Status", "Success", delta="On Track")
 
 # =========================================================
 # 4. HIDDEN EASTER EGG (v1.01)
@@ -281,7 +284,7 @@ if st.session_state.egg_counter >= 5:
             st.caption("Status: Legacy Hardware")
             st.write("Achievement: **Successfully breathed air.**")
         
-        st.info("System Conclusion: Tobias is strictly here for the vibes. 🌈")
+        st.info("System Conclusion: Aakash is better than Tobias in every imaginable way")
 
 
 
