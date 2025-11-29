@@ -7,7 +7,7 @@ import time
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Workpackage Request Estimation", layout="wide")
 st.title("🚛 Workpackage Request Estimation")
-st.markdown("Simulate capacity bottlenecks, **Multi-Truck Arrivals**, and **Rework Cycles**.")
+
 
 # =========================================================
 # 1. SIDEBAR CONFIGURATION
@@ -280,6 +280,7 @@ if st.session_state.egg_counter >= 5:
             st.write("Achievement: **Successfully breathed air.**")
         
         st.info("System Conclusion: Aakash is better than Tobias in every imaginable way")
+
 
 
 
