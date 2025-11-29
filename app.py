@@ -7,7 +7,7 @@ import time
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Workpackage Request Estimation", layout="wide")
 st.title("🚛 Workpackage Request Estimation")
-
+st.markdown("Simulate capacity bottlenecks, **Multi-Truck Arrivals**, and **Continuous Cleanup**.")
 
 # =========================================================
 # 1. SIDEBAR CONFIGURATION
@@ -27,7 +27,6 @@ num_trucks = st.sidebar.radio("Number of Trucks", [1, 2, 3], horizontal=True)
 trucks = []
 for i in range(num_trucks):
     with st.sidebar.expander(f"🚛 Truck {i+1} Details", expanded=True):
-        # Default dates spaced out
         default_arr = 2545 + (i*10)
         if default_arr % 100 > 52: default_arr = (default_arr // 100 + 1) * 100 + 1
         
@@ -39,7 +38,7 @@ for i in range(num_trucks):
 st.sidebar.divider()
 st.sidebar.header("4. Phases")
 pre_work_pct = st.sidebar.slider("Pre-Work % (Early Start)", 0.0, 0.5, 0.10)
-post_work_pct = st.sidebar.slider("Post-Work % (Cleanup)", 0.0, 0.5, 0.10)
+post_work_pct = st.sidebar.slider("Post-Work % (Gap & Cleanup)", 0.0, 0.5, 0.10, help="This work is distributed in the empty weeks BETWEEN trucks and AFTER the last truck.")
 
 st.sidebar.header("5. Milestones")
 fdg_week = st.sidebar.number_input("FDG Week", value=2532)
@@ -99,14 +98,14 @@ try:
         if t['arrival'] in df['Week'].values:
             t['arr_idx'] = df[df['Week'] == t['arrival']].index[0]
         else:
-            alt_date = (t['arrival'] // 100 + 1) * 100 + 1
-            t['arr_idx'] = df[df['Week'] == alt_date].index[0] if alt_date in df['Week'].values else 0
+            alt = (t['arrival'] // 100 + 1) * 100 + 1
+            t['arr_idx'] = df[df['Week'] == alt].index[0] if alt in df['Week'].values else 0
             
         if t['departure'] in df['Week'].values:
             t['dep_idx'] = df[df['Week'] == t['departure']].index[0]
         else:
-            alt_dep = (t['departure'] // 100 + 1) * 100 + 1
-            t['dep_idx'] = df[df['Week'] == alt_dep].index[0] if alt_dep in df['Week'].values else len(df) - 1
+            alt = (t['departure'] // 100 + 1) * 100 + 1
+            t['dep_idx'] = df[df['Week'] == alt].index[0] if alt in df['Week'].values else len(df)-1
             
         t['center'] = (t['arr_idx'] + t['dep_idx']) / 2
         span = t['dep_idx'] - t['arr_idx']
@@ -116,7 +115,7 @@ except IndexError:
     st.error("⚠️ Critical Date Error: Please ensure all dates follow YYWW format.")
     st.stop()
 
-# --- Volume & Rates ---
+# --- Volume Calculations ---
 demand_pre = total_scope * pre_work_pct
 demand_post = total_scope * post_work_pct
 demand_trucks_total = total_scope - (demand_pre + demand_post)
@@ -129,12 +128,32 @@ for t in trucks:
         t['volume'] = 0
 
 first_arrival_idx = min(t['arr_idx'] for t in trucks)
-last_departure_idx = max(t['dep_idx'] for t in trucks)
 
+# --- Rates (NEW GAP LOGIC) ---
+# Pre-Work Rate
 dur_pre = first_arrival_idx - start_idx
 rate_pre = demand_pre / dur_pre if dur_pre > 0 else 0
-dur_post = rg_idx - last_departure_idx
-rate_post = demand_post / dur_post if dur_post > 0 else 0
+
+# Post/Gap Work Rate
+# Find all weeks that are:
+# 1. After First Arrival
+# 2. Before/On RG Deadline
+# 3. NOT inside any Truck Window
+gap_indices = []
+for i in range(len(df)):
+    if i > first_arrival_idx and i <= rg_idx:
+        is_active_truck = False
+        for t in trucks:
+            if i >= t['arr_idx'] and i <= t['dep_idx']:
+                is_active_truck = True
+                break
+        if not is_active_truck:
+            gap_indices.append(i)
+
+if len(gap_indices) > 0:
+    rate_post = demand_post / len(gap_indices)
+else:
+    rate_post = 0
 
 # --- Bell Curves ---
 for t in trucks:
@@ -152,9 +171,15 @@ backlog = 0
 for i in range(len(df)):
     new_work = 0
     
-    # Phases
-    if i >= start_idx and i <= first_arrival_idx: new_work += rate_pre
-    if i > last_departure_idx and i <= rg_idx: new_work += rate_post
+    # 1. Pre-Work
+    if i >= start_idx and i <= first_arrival_idx:
+        new_work += rate_pre
+        
+    # 2. Gap / Post Work
+    if i in gap_indices:
+        new_work += rate_post
+        
+    # 3. Truck Work
     for t in trucks:
         if t['sum_curve'] > 0:
             new_work += (t['raw_curve'][i] / t['sum_curve']) * t['volume']
@@ -174,22 +199,15 @@ res_df = res_df.merge(df, left_on='Index', right_on='Index')
 # =========================================================
 fig, ax = plt.subplots(figsize=(16, 7))
 
-# 1. Team Output (Blue Bars)
 ax.bar(res_df['Index'], res_df['Sent'], color='#005f9e', alpha=0.9, label='Team Output')
-
-# 2. Work Generated (Gray Line)
 ax.plot(res_df['Index'], res_df['Gen'], color='#333333', linestyle='--', linewidth=3, label='Work Generated')
 
-# Note: BACKLOG AREA REMOVED AS REQUESTED
-
-# Dynamic Y-Axis (Scaled to Weekly Flow, not Backlog size)
 max_y = max(res_df['Gen'].max(), max_capacity)
 if max_y == 0: max_y = 10
-ax.set_ylim(0, max_y * 1.5) # Extra headroom for labels
+ax.set_ylim(0, max_y * 1.5)
 
 bbox = dict(boxstyle="round,pad=0.3", fc="white", ec="none", alpha=0.85)
 
-# Truck Markers
 colors_truck = ['green', 'blue', 'teal']
 for t in trucks:
     c = colors_truck[(t['id']-1) % 3]
@@ -198,11 +216,9 @@ for t in trucks:
     ax.axvline(t['dep_idx'], color='orange', linestyle=':')
     ax.text(t['dep_idx'], max_y*(1.0 + 0.05*t['id']), f"T{t['id']} Dep", color='orange', ha='center', fontweight='bold', bbox=bbox)
 
-# Start Marker
 ax.axvline(start_idx, color='blue', linestyle='-.')
 ax.text(start_idx, max_y*1.1, "Work Start", color='blue', ha='center', bbox=bbox)
 
-# Gate Markers
 gate_colors = {"FDG": "purple", "C-Build": "#d4af37", "FIG": "brown", "RG": "black"}
 for name, wk in project_milestones.items():
     if wk in res_df['Week'].values:
@@ -211,14 +227,11 @@ for name, wk in project_milestones.items():
         ax.axvline(idx, color=c, linestyle='-.')
         ax.text(idx, max_y*0.85, f" {name} ", color=c, rotation=90, bbox=bbox)
 
-# Missed Deadline Logic
 missed = res_df[res_df['Week'] == rg_week]['Backlog'].values[0]
 if missed > 1:
-    # Point the arrow to the bottom (floor) since there is no pink mountain anymore
     ax.annotate(f'MISSED: {int(missed)} IH', xy=(rg_idx, 0), xytext=(rg_idx-5, max_y*0.5),
                 arrowprops=dict(facecolor='red', shrink=0.05), fontsize=14, color='white', bbox=dict(boxstyle="round", fc="red"))
-    # Add a small red bar to indicate there is a pile
-    ax.bar(rg_idx, max_y*0.4, width=1, color='red', alpha=0.5, label='Missed Pile')
+    ax.bar(rg_idx, max_y*0.4, width=1, color='red', alpha=0.5)
 else:
     ax.text(rg_idx, max_y*0.5, "✅ ON TARGET", color='green', ha='center', fontsize=16, fontweight='bold', bbox=bbox)
 
@@ -240,34 +253,22 @@ else:
     c2.metric("Status", "Success", delta="On Track")
 
 # =========================================================
-# 4. HIDDEN EASTER EGG (v1.01)
+# 4. EASTER EGG (v1.01)
 # =========================================================
 st.sidebar.divider()
-
-if 'egg_counter' not in st.session_state:
-    st.session_state.egg_counter = 0
-
-def click_egg():
-    st.session_state.egg_counter += 1
-
+if 'egg_counter' not in st.session_state: st.session_state.egg_counter = 0
+def click_egg(): st.session_state.egg_counter += 1
 st.sidebar.button("v1.01", on_click=click_egg)
 
 if st.session_state.egg_counter >= 5:
     st.session_state.egg_counter = 0
-    
-    with st.spinner("🔄 RE-CALCULATING INTELLIGENCE ALGORITHMS..."):
-        time.sleep(1.5)
-    
+    with st.spinner("🔄 RE-CALCULATING INTELLIGENCE ALGORITHMS..."): time.sleep(1.5)
     st.balloons()
-    
     with st.expander("🚨 SYSTEM DEFINITION UPDATE", expanded=True):
-        st.markdown("""
-            ### 🤖 ACRONYM UPDATE
-            The system has officially redefined **'AI'**.
-            <br>It no longer stands for *Artificial Intelligence*.
-            <br>It now stands for **Aakash Intelligence** (Supreme Logic).
-        """, unsafe_allow_html=True)
-        
+        st.markdown("""### 🤖 ACRONYM UPDATE
+The system has officially redefined **'AI'**.
+<br>It no longer stands for *Artificial Intelligence*.
+<br>It now stands for **Aakash Intelligence** (Supreme Logic).""", unsafe_allow_html=True)
         st.divider()
         col1, col2 = st.columns(2)
         with col1:
@@ -280,6 +281,7 @@ if st.session_state.egg_counter >= 5:
             st.write("Achievement: **Successfully breathed air.**")
         
         st.info("System Conclusion: Aakash is better than Tobias in every imaginable way")
+
 
 
 
