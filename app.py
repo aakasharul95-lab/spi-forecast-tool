@@ -27,13 +27,12 @@ num_trucks = st.sidebar.radio("Number of Trucks", [1, 2, 3], horizontal=True)
 trucks = []
 for i in range(num_trucks):
     with st.sidebar.expander(f"🚛 Truck {i+1} Details", expanded=True):
-        # Default dates spaced out to avoid overlap
+        # Default dates spaced out
         default_arr = 2545 + (i*10)
-        # Auto-correct default if it hits 53+
         if default_arr % 100 > 52: default_arr = (default_arr // 100 + 1) * 100 + 1
         
         t_arr = st.number_input(f"T{i+1} Arrival (YYWW)", value=default_arr)
-        t_dep = st.number_input(f"T{i+1} Departure (YYWW)", value=t_arr + 8) # Default 8 weeks later
+        t_dep = st.number_input(f"T{i+1} Departure (YYWW)", value=t_arr + 8)
         t_weight = st.slider(f"T{i+1} Workload Weight", 1, 100, 100)
         trucks.append({"id": i+1, "arrival": t_arr, "departure": t_dep, "weight": t_weight})
 
@@ -67,7 +66,6 @@ if earliest_date % 100 <= 2:
 else:
     start_week = earliest_date - 2
 
-# Calculate Duration covering year rollovers
 end_year_diff = (latest_date // 100) - (start_week // 100)
 end_week_diff = (latest_date % 100) - (start_week % 100)
 total_duration = (end_year_diff * 52) + end_week_diff + 12
@@ -98,32 +96,24 @@ try:
     start_idx = df[df['Week'] == work_start_week].index[0]
     
     for t in trucks:
-        # Check if date exists, otherwise map to closest or 0
         if t['arrival'] in df['Week'].values:
             t['arr_idx'] = df[df['Week'] == t['arrival']].index[0]
         else:
-            # Smart Fallback: If 2553 is entered, try 2601
             alt_date = (t['arrival'] // 100 + 1) * 100 + 1
-            if alt_date in df['Week'].values:
-                t['arr_idx'] = df[df['Week'] == alt_date].index[0]
-            else:
-                t['arr_idx'] = 0 # Default to start if totally lost
+            t['arr_idx'] = df[df['Week'] == alt_date].index[0] if alt_date in df['Week'].values else 0
             
         if t['departure'] in df['Week'].values:
             t['dep_idx'] = df[df['Week'] == t['departure']].index[0]
         else:
             alt_dep = (t['departure'] // 100 + 1) * 100 + 1
-            if alt_dep in df['Week'].values:
-                t['dep_idx'] = df[df['Week'] == alt_dep].index[0]
-            else:
-                t['dep_idx'] = len(df) - 1
+            t['dep_idx'] = df[df['Week'] == alt_dep].index[0] if alt_dep in df['Week'].values else len(df) - 1
             
         t['center'] = (t['arr_idx'] + t['dep_idx']) / 2
         span = t['dep_idx'] - t['arr_idx']
         t['sigma'] = span / 5 if span > 0 else 0.5
         
 except IndexError:
-    st.error("⚠️ Critical Date Error: Please ensure all dates follow YYWW format (e.g. 2530). Don't use week 53.")
+    st.error("⚠️ Critical Date Error: Please ensure all dates follow YYWW format.")
     st.stop()
 
 # --- Volume & Rates ---
@@ -184,32 +174,35 @@ res_df = res_df.merge(df, left_on='Index', right_on='Index')
 # =========================================================
 fig, ax = plt.subplots(figsize=(16, 7))
 
-# Areas
-ax.fill_between(res_df['Index'], res_df['Backlog'], color='#ffcccb', alpha=0.6, label='Backlog')
+# 1. Team Output (Blue Bars)
 ax.bar(res_df['Index'], res_df['Sent'], color='#005f9e', alpha=0.9, label='Team Output')
+
+# 2. Work Generated (Gray Line)
 ax.plot(res_df['Index'], res_df['Gen'], color='#333333', linestyle='--', linewidth=3, label='Work Generated')
 
-max_y = max(res_df['Backlog'].max(), max_capacity)
+# Note: BACKLOG AREA REMOVED AS REQUESTED
+
+# Dynamic Y-Axis (Scaled to Weekly Flow, not Backlog size)
+max_y = max(res_df['Gen'].max(), max_capacity)
 if max_y == 0: max_y = 10
-ax.set_ylim(0, max_y * 1.35)
+ax.set_ylim(0, max_y * 1.5) # Extra headroom for labels
 
 bbox = dict(boxstyle="round,pad=0.3", fc="white", ec="none", alpha=0.85)
 
-# Markers
+# Truck Markers
 colors_truck = ['green', 'blue', 'teal']
 for t in trucks:
     c = colors_truck[(t['id']-1) % 3]
-    # Arrival Label
     ax.axvline(t['arr_idx'], color=c, linestyle=':')
     ax.text(t['arr_idx'], max_y*(1.0 + 0.05*t['id']), f"T{t['id']} Arr", color=c, ha='center', fontweight='bold', bbox=bbox)
-    
-    # Departure Label (Restored!)
     ax.axvline(t['dep_idx'], color='orange', linestyle=':')
     ax.text(t['dep_idx'], max_y*(1.0 + 0.05*t['id']), f"T{t['id']} Dep", color='orange', ha='center', fontweight='bold', bbox=bbox)
 
+# Start Marker
 ax.axvline(start_idx, color='blue', linestyle='-.')
 ax.text(start_idx, max_y*1.1, "Work Start", color='blue', ha='center', bbox=bbox)
 
+# Gate Markers
 gate_colors = {"FDG": "purple", "C-Build": "#d4af37", "FIG": "brown", "RG": "black"}
 for name, wk in project_milestones.items():
     if wk in res_df['Week'].values:
@@ -218,10 +211,14 @@ for name, wk in project_milestones.items():
         ax.axvline(idx, color=c, linestyle='-.')
         ax.text(idx, max_y*0.85, f" {name} ", color=c, rotation=90, bbox=bbox)
 
+# Missed Deadline Logic
 missed = res_df[res_df['Week'] == rg_week]['Backlog'].values[0]
 if missed > 1:
-    ax.annotate(f'MISSED: {int(missed)}', xy=(rg_idx, missed), xytext=(rg_idx-5, missed+(max_y*0.1)),
+    # Point the arrow to the bottom (floor) since there is no pink mountain anymore
+    ax.annotate(f'MISSED: {int(missed)} IH', xy=(rg_idx, 0), xytext=(rg_idx-5, max_y*0.5),
                 arrowprops=dict(facecolor='red', shrink=0.05), fontsize=14, color='white', bbox=dict(boxstyle="round", fc="red"))
+    # Add a small red bar to indicate there is a pile
+    ax.bar(rg_idx, max_y*0.4, width=1, color='red', alpha=0.5, label='Missed Pile')
 else:
     ax.text(rg_idx, max_y*0.5, "✅ ON TARGET", color='green', ha='center', fontsize=16, fontweight='bold', bbox=bbox)
 
@@ -253,10 +250,8 @@ if 'egg_counter' not in st.session_state:
 def click_egg():
     st.session_state.egg_counter += 1
 
-# Updated Button: "v1.01", no tooltip
 st.sidebar.button("v1.01", on_click=click_egg)
 
-# Updated Trigger: 5 clicks
 if st.session_state.egg_counter >= 5:
     st.session_state.egg_counter = 0
     
@@ -285,6 +280,7 @@ if st.session_state.egg_counter >= 5:
             st.write("Achievement: **Successfully breathed air.**")
         
         st.info("System Conclusion: Aakash is better than Tobias in every imaginable way")
+
 
 
 
