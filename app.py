@@ -20,7 +20,7 @@ se_count = st.sidebar.number_input("SE Headcount", value=3)
 ih_per_se = st.sidebar.number_input("IH per SE/Week", value=5)
 
 st.sidebar.divider()
-st.sidebar.header("3. Truck Configuration")
+st.sidebar.header("3. Choose the number of trucks you will recieve")
 num_trucks = st.sidebar.radio("Number of Trucks", [1, 2, 3], horizontal=True)
 
 trucks = []
@@ -280,6 +280,7 @@ The system has officially redefined **'AI'**.
             st.write("Achievement: **Successfully breathed air.**")
         
         st.info("System Conclusion: Aakash is better than Tobias in every imaginable way")
+
 
 
 
