@@ -267,7 +267,7 @@ if st.session_state.egg_counter >= 5:
         st.markdown("""### 🤖 ACRONYM UPDATE
 The system has officially redefined **'AI'**.
 <br>It no longer stands for *Artificial Intelligence*.
-<br>It now stands for **Aakash Intelligence** (Supreme Logic).""", unsafe_allow_html=True)
+<br>It now stands for **Aakash Intelligence**.""", unsafe_allow_html=True)
         st.divider()
         col1, col2 = st.columns(2)
         with col1:
@@ -280,6 +280,7 @@ The system has officially redefined **'AI'**.
             st.write("Achievement: **Successfully breathed air.**")
         
         st.info("System Conclusion: Aakash is better than Tobias in every imaginable way")
+
 
 
 
