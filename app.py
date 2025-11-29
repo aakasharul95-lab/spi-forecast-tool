@@ -13,13 +13,13 @@ st.markdown("Simulate capacity bottlenecks, **Multi-Truck Arrivals**, and **Rewo
 # 1. SIDEBAR CONFIGURATION
 # =========================================================
 st.sidebar.header("1. Global Scope")
-total_scope = st.sidebar.number_input("Total Infoheaders", value=1500, step=50)
+total_scope = st.sidebar.number_input("Total Infoheaders", value=50, step=10) # Updated default to match your screenshot
 work_start_week = st.sidebar.number_input("Work Start Week (YYWW)", value=2535)
 
 st.sidebar.header("2. Team Resources")
-se_count = st.sidebar.number_input("SE Headcount", value=3)
+se_count = st.sidebar.number_input("SE Headcount", value=50) # Updated to your screenshot
 ih_per_se = st.sidebar.number_input("IH per SE/Week", value=5)
-rework_rate = st.sidebar.slider("Rework Rate %", 0.0, 1.0, 0.15, help="Percentage of work rejected and redone.")
+rework_rate = st.sidebar.slider("Rework Rate %", 0.0, 1.0, 1.00, help="Percentage of work rejected and redone.") # Updated to your screenshot
 
 st.sidebar.divider()
 st.sidebar.header("3. Truck Configuration")
@@ -29,8 +29,8 @@ trucks = []
 for i in range(num_trucks):
     with st.sidebar.expander(f"🚛 Truck {i+1} Details", expanded=True):
         t_arr = st.number_input(f"T{i+1} Arrival (YYWW)", value=2545 + (i*10))
-        t_dep = st.number_input(f"T{i+1} Departure (YYWW)", value=2552 + (i*10))
-        t_weight = st.slider(f"T{i+1} Workload Weight", 1, 100, 50)
+        t_dep = st.number_input(f"T{i+1} Departure (YYWW)", value=2554 + (i*10)) # Updated default
+        t_weight = st.slider(f"T{i+1} Workload Weight", 1, 100, 100)
         trucks.append({"id": i+1, "arrival": t_arr, "departure": t_dep, "weight": t_weight})
 
 st.sidebar.divider()
@@ -42,7 +42,7 @@ st.sidebar.header("5. Milestones")
 fdg_week = st.sidebar.number_input("FDG Week", value=2532)
 c_build_week = st.sidebar.number_input("C-Build Week", value=2548)
 fig_week = st.sidebar.number_input("FIG Week", value=2605)
-rg_week = st.sidebar.number_input("RG Deadline", value=2640)
+rg_week = st.sidebar.number_input("RG Deadline", value=2620)
 
 # =========================================================
 # 2. LOGIC ENGINE
@@ -50,21 +50,26 @@ rg_week = st.sidebar.number_input("RG Deadline", value=2640)
 max_capacity = se_count * ih_per_se
 project_milestones = {"FDG": fdg_week, "C-Build": c_build_week, "FIG": fig_week, "RG": rg_week}
 
-# --- Dynamic Timeline ---
-all_dates = [work_start_week, fdg_week, c_build_week, 2530]
+# --- Dynamic Timeline (THE FIX) ---
+# We gather EVERY date input to ensure the timeline covers them all
+all_dates = [work_start_week, fdg_week, c_build_week, fig_week, rg_week, 2530]
 for t in trucks:
     all_dates.extend([t['arrival'], t['departure']])
 
+# Find absolute min and max
 earliest_date = min(all_dates)
+latest_date = max(all_dates)
+
+# Buffer the start (2 weeks before earliest date)
 if earliest_date % 100 <= 2:
     start_week = ((earliest_date // 100) - 1) * 100 + 50
 else:
     start_week = earliest_date - 2
 
-latest_date = max(rg_week, max([t['departure'] for t in trucks]))
+# Calculate exact duration needed to cover the latest date
 end_year_diff = (latest_date // 100) - (start_week // 100)
 end_week_diff = (latest_date % 100) - (start_week % 100)
-total_duration = (end_year_diff * 52) + end_week_diff + 15
+total_duration = (end_year_diff * 52) + end_week_diff + 10 # +10 weeks buffer at the end
 weeks_to_show = max(60, total_duration)
 
 def generate_yyww_timeline(start, duration):
@@ -92,12 +97,24 @@ try:
     start_idx = df[df['Week'] == work_start_week].index[0]
     
     for t in trucks:
-        t['arr_idx'] = df[df['Week'] == t['arrival']].index[0]
-        t['dep_idx'] = df[df['Week'] == t['departure']].index[0]
+        # Robust lookup: if date not found (due to timeline edge case), clamp to limits
+        if t['arrival'] in df['Week'].values:
+            t['arr_idx'] = df[df['Week'] == t['arrival']].index[0]
+        else:
+            t['arr_idx'] = 0 # Fallback
+            
+        if t['departure'] in df['Week'].values:
+            t['dep_idx'] = df[df['Week'] == t['departure']].index[0]
+        else:
+            t['dep_idx'] = len(df) - 1 # Fallback
+            
         t['center'] = (t['arr_idx'] + t['dep_idx']) / 2
-        t['sigma'] = (t['dep_idx'] - t['arr_idx']) / 5
+        # Avoid division by zero if arrival = departure
+        span = t['dep_idx'] - t['arr_idx']
+        t['sigma'] = span / 5 if span > 0 else 0.5
+        
 except IndexError:
-    st.error("⚠️ Date Mismatch: Dates outside calculated timeline.")
+    st.error("⚠️ Critical Date Error: Please ensure all dates follow YYWW format (e.g. 2530).")
     st.stop()
 
 # --- Volume & Rates ---
@@ -107,7 +124,10 @@ demand_trucks_total = total_scope - (demand_pre + demand_post)
 
 total_weight = sum(t['weight'] for t in trucks)
 for t in trucks:
-    t['volume'] = demand_trucks_total * (t['weight'] / total_weight)
+    if total_weight > 0:
+        t['volume'] = demand_trucks_total * (t['weight'] / total_weight)
+    else:
+        t['volume'] = 0
 
 first_arrival_idx = min(t['arr_idx'] for t in trucks)
 last_departure_idx = max(t['dep_idx'] for t in trucks)
@@ -220,7 +240,7 @@ else:
     c4.metric("Status", "Success", delta="On Track")
 
 # =========================================================
-# 4. THE EASTER EGG (Hidden in Sidebar)
+# 4. HIDDEN EASTER EGG (v1.01)
 # =========================================================
 st.sidebar.divider()
 
@@ -230,10 +250,11 @@ if 'egg_counter' not in st.session_state:
 def click_egg():
     st.session_state.egg_counter += 1
 
-# The tiny button (Change label to " . " to hide it better)
-st.sidebar.button("🥚", on_click=click_egg, help="Do not click this 3 times.")
+# Updated Button: "v1.01", no tooltip
+st.sidebar.button("v1.01", on_click=click_egg)
 
-if st.session_state.egg_counter >= 3:
+# Updated Trigger: 5 clicks
+if st.session_state.egg_counter >= 5:
     st.session_state.egg_counter = 0
     
     with st.spinner("🔄 RE-CALCULATING INTELLIGENCE ALGORITHMS..."):
