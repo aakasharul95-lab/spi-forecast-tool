@@ -257,7 +257,7 @@ else:
 st.sidebar.divider()
 if 'egg_counter' not in st.session_state: st.session_state.egg_counter = 0
 def click_egg(): st.session_state.egg_counter += 1
-st.sidebar.button("Developed by Aakash", on_click=click_egg)
+st.sidebar.button("Version 1.01", on_click=click_egg)
 
 if st.session_state.egg_counter >= 5:
     st.session_state.egg_counter = 0
@@ -280,6 +280,7 @@ The system has officially redefined **'AI'**.
             st.write("Achievement: **Successfully breathed air.**")
         
         st.info("System Conclusion: Aakash is better than Tobias in every imaginable way")
+
 
 
 
