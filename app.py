@@ -16,12 +16,14 @@ total_scope = st.sidebar.number_input("Total Infoheaders", value=1500, step=50)
 work_start_week = st.sidebar.number_input("Work Start Week (YYWW)", value=2535)
 
 st.sidebar.header("2. Team Resources")
-se_count = st.sidebar.number_input("SE Headcount", value=3)
-ih_per_se = st.sidebar.number_input("IH per SE/Week", value=5)
+# UPDATED: Changed values to floats and adjusted steps for decimal inputs
+se_count = st.sidebar.number_input("SE Headcount", value=3.0, step=0.5)
+ih_per_se = st.sidebar.number_input("IH per SE/Week", value=5.0, step=0.1)
 
 st.sidebar.divider()
 st.sidebar.header("3. Choose the number of trucks you will recieve")
-num_trucks = st.sidebar.radio("Number of Trucks", [1, 2, 3], horizontal=True)
+# UPDATED: Replaced radio button with a slider for 1 to 10 trucks
+num_trucks = st.sidebar.slider("Number of Trucks", min_value=1, max_value=10, value=3)
 
 trucks = []
 for i in range(num_trucks):
@@ -128,16 +130,10 @@ for t in trucks:
 
 first_arrival_idx = min(t['arr_idx'] for t in trucks)
 
-# --- Rates (NEW GAP LOGIC) ---
-# Pre-Work Rate
+# --- Rates ---
 dur_pre = first_arrival_idx - start_idx
 rate_pre = demand_pre / dur_pre if dur_pre > 0 else 0
 
-# Post/Gap Work Rate
-# Find all weeks that are:
-# 1. After First Arrival
-# 2. Before/On RG Deadline
-# 3. NOT inside any Truck Window
 gap_indices = []
 for i in range(len(df)):
     if i > first_arrival_idx and i <= rg_idx:
@@ -169,21 +165,14 @@ backlog = 0
 
 for i in range(len(df)):
     new_work = 0
-    
-    # 1. Pre-Work
     if i >= start_idx and i <= first_arrival_idx:
         new_work += rate_pre
-        
-    # 2. Gap / Post Work
     if i in gap_indices:
         new_work += rate_post
-        
-    # 3. Truck Work
     for t in trucks:
         if t['sum_curve'] > 0:
             new_work += (t['raw_curve'][i] / t['sum_curve']) * t['volume']
 
-    # Process
     pool = new_work + backlog
     processed = min(pool, max_capacity)
     backlog = pool - processed
@@ -203,13 +192,16 @@ ax.plot(res_df['Index'], res_df['Gen'], color='#333333', linestyle='--', linewid
 
 max_y = max(res_df['Gen'].max(), max_capacity)
 if max_y == 0: max_y = 10
-ax.set_ylim(0, max_y * 1.5)
+
+# UPDATED: Dynamic Y-limit to prevent up to 10 labels from clipping at the top
+ax.set_ylim(0, max_y * (1.2 + 0.05 * num_trucks))
 
 bbox = dict(boxstyle="round,pad=0.3", fc="white", ec="none", alpha=0.85)
 
-colors_truck = ['green', 'blue', 'teal']
+# UPDATED: Expanded color palette
+colors_truck = ['green', 'blue', 'teal', 'magenta', 'darkorange', 'purple', 'cyan', 'brown', 'crimson', 'olive']
 for t in trucks:
-    c = colors_truck[(t['id']-1) % 3]
+    c = colors_truck[(t['id']-1) % len(colors_truck)]
     ax.axvline(t['arr_idx'], color=c, linestyle=':')
     ax.text(t['arr_idx'], max_y*(1.0 + 0.05*t['id']), f"T{t['id']} Arr", color=c, ha='center', fontweight='bold', bbox=bbox)
     ax.axvline(t['dep_idx'], color='orange', linestyle=':')
@@ -280,20 +272,3 @@ The system has officially redefined **'AI'**.
             st.write("Achievement: **Successfully breathed air.**")
         
         st.info("System Conclusion: Aakash is better than Tobias in every imaginable way")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
