@@ -3,6 +3,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.stats import norm
 import time
+import math
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Workpackage Request Estimation", layout="wide")
@@ -16,24 +17,36 @@ total_scope = st.sidebar.number_input("Total Infoheaders", value=1500, step=50)
 work_start_week = st.sidebar.number_input("Work Start Week (YYWW)", value=2535)
 
 st.sidebar.header("2. Team Resources")
-# UPDATED: Changed values to floats and adjusted steps for decimal inputs
 se_count = st.sidebar.number_input("SE Headcount", value=3.0, step=0.5)
 ih_per_se = st.sidebar.number_input("IH per SE/Week", value=5.0, step=0.1)
 
 st.sidebar.divider()
-st.sidebar.header("3. Choose the number of trucks you will recieve")
-# UPDATED: Replaced radio button with a slider for 1 to 10 trucks
-num_trucks = st.sidebar.slider("Number of Trucks", min_value=1, max_value=10, value=3)
+st.sidebar.header("3. Choose the number of trucks you will receive")
+
+# UPDATED: Number input accepting 2 decimals
+num_trucks_input = st.sidebar.number_input("Number of Trucks", min_value=0.01, max_value=10.00, value=3.00, step=0.01, format="%.2f")
+
+# Round up to determine how many UI blocks to draw
+ui_truck_count = math.ceil(num_trucks_input)
 
 trucks = []
-for i in range(num_trucks):
+for i in range(ui_truck_count):
     with st.sidebar.expander(f"🚛 Truck {i+1} Details", expanded=True):
         default_arr = 2545 + (i*10)
         if default_arr % 100 > 52: default_arr = (default_arr // 100 + 1) * 100 + 1
         
         t_arr = st.number_input(f"T{i+1} Arrival (YYWW)", value=default_arr)
         t_dep = st.number_input(f"T{i+1} Departure (YYWW)", value=t_arr + 8)
-        t_weight = st.slider(f"T{i+1} Workload Weight", 1, 100, 100)
+        
+        # Calculate if this is a fractional remainder truck
+        fraction = round(num_trucks_input % 1, 2)
+        if i == ui_truck_count - 1 and fraction > 0:
+            default_weight = max(1, int(fraction * 100))
+            st.info(f"Calculated as a {fraction} fractional truck.")
+        else:
+            default_weight = 100
+
+        t_weight = st.slider(f"T{i+1} Workload Weight", 1, 100, default_weight)
         trucks.append({"id": i+1, "arrival": t_arr, "departure": t_dep, "weight": t_weight})
 
 st.sidebar.divider()
@@ -134,16 +147,12 @@ first_arrival_idx = min(t['arr_idx'] for t in trucks)
 dur_pre = first_arrival_idx - start_idx
 rate_pre = demand_pre / dur_pre if dur_pre > 0 else 0
 
-gap_indices = []
-for i in range(len(df)):
-    if i > first_arrival_idx and i <= rg_idx:
-        is_active_truck = False
-        for t in trucks:
-            if i >= t['arr_idx'] and i <= t['dep_idx']:
-                is_active_truck = True
-                break
-        if not is_active_truck:
-            gap_indices.append(i)
+# UPDATED: Simplified Gap Logic using list comprehensions
+truck_windows = [(t['arr_idx'], t['dep_idx']) for t in trucks]
+gap_indices = [
+    i for i in range(first_arrival_idx + 1, rg_idx + 1)
+    if not any(start <= i <= end for start, end in truck_windows)
+]
 
 if len(gap_indices) > 0:
     rate_post = demand_post / len(gap_indices)
@@ -193,12 +202,10 @@ ax.plot(res_df['Index'], res_df['Gen'], color='#333333', linestyle='--', linewid
 max_y = max(res_df['Gen'].max(), max_capacity)
 if max_y == 0: max_y = 10
 
-# UPDATED: Dynamic Y-limit to prevent up to 10 labels from clipping at the top
-ax.set_ylim(0, max_y * (1.2 + 0.05 * num_trucks))
+ax.set_ylim(0, max_y * (1.2 + 0.05 * ui_truck_count))
 
 bbox = dict(boxstyle="round,pad=0.3", fc="white", ec="none", alpha=0.85)
 
-# UPDATED: Expanded color palette
 colors_truck = ['green', 'blue', 'teal', 'magenta', 'darkorange', 'purple', 'cyan', 'brown', 'crimson', 'olive']
 for t in trucks:
     c = colors_truck[(t['id']-1) % len(colors_truck)]
