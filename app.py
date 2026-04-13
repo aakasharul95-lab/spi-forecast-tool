@@ -23,7 +23,7 @@ ih_per_se = st.sidebar.number_input("IH per SE/Week", value=5.0, step=0.1)
 st.sidebar.divider()
 st.sidebar.header("3. Choose the number of trucks you will receive")
 
-# UPDATED: Number input accepting 2 decimals
+# Number input accepting 2 decimals
 num_trucks_input = st.sidebar.number_input("Number of Trucks", min_value=0.01, max_value=10.00, value=3.00, step=0.01, format="%.2f")
 
 # Round up to determine how many UI blocks to draw
@@ -134,12 +134,16 @@ demand_pre = total_scope * pre_work_pct
 demand_post = total_scope * post_work_pct
 demand_trucks_total = total_scope - (demand_pre + demand_post)
 
+# Calculate absolute capacity
 total_weight = sum(t['weight'] for t in trucks)
+effective_denominator = max(100, total_weight)
+
+unassigned_volume = 0
+if total_weight < 100:
+    unassigned_volume = demand_trucks_total * ((100 - total_weight) / 100)
+
 for t in trucks:
-    if total_weight > 0:
-        t['volume'] = demand_trucks_total * (t['weight'] / total_weight)
-    else:
-        t['volume'] = 0
+    t['volume'] = demand_trucks_total * (t['weight'] / effective_denominator)
 
 first_arrival_idx = min(t['arr_idx'] for t in trucks)
 
@@ -147,7 +151,7 @@ first_arrival_idx = min(t['arr_idx'] for t in trucks)
 dur_pre = first_arrival_idx - start_idx
 rate_pre = demand_pre / dur_pre if dur_pre > 0 else 0
 
-# UPDATED: Simplified Gap Logic using list comprehensions
+# Simplified Gap Logic using list comprehensions
 truck_windows = [(t['arr_idx'], t['dep_idx']) for t in trucks]
 gap_indices = [
     i for i in range(first_arrival_idx + 1, rg_idx + 1)
@@ -225,10 +229,17 @@ for name, wk in project_milestones.items():
         ax.axvline(idx, color=c, linestyle='-.')
         ax.text(idx, max_y*0.85, f" {name} ", color=c, rotation=90, bbox=bbox)
 
+# --- Updated Risk Annotation ---
 missed = res_df[res_df['Week'] == rg_week]['Backlog'].values[0]
-if missed > 1:
-    ax.annotate(f'MISSED: {int(missed)} IH', xy=(rg_idx, 0), xytext=(rg_idx-5, max_y*0.5),
-                arrowprops=dict(facecolor='red', shrink=0.05), fontsize=14, color='white', bbox=dict(boxstyle="round", fc="red"))
+total_risk = missed + unassigned_volume
+
+if total_risk > 1:
+    risk_text = []
+    if missed > 1: risk_text.append(f"MISSED: {int(missed)} IH")
+    if unassigned_volume > 1: risk_text.append(f"UNSCHEDULED: {int(unassigned_volume)} IH")
+    
+    ax.annotate('\n'.join(risk_text), xy=(rg_idx, 0), xytext=(rg_idx-5, max_y*0.5),
+                arrowprops=dict(facecolor='red', shrink=0.05), fontsize=12, color='white', bbox=dict(boxstyle="round", fc="red"))
     ax.bar(rg_idx, max_y*0.4, width=1, color='red', alpha=0.5)
 else:
     ax.text(rg_idx, max_y*0.5, "✅ ON TARGET", color='green', ha='center', fontsize=16, fontweight='bold', bbox=bbox)
@@ -242,11 +253,14 @@ ax.set_xticklabels(res_df['Week_Str'][::step], rotation=90)
 
 st.pyplot(fig)
 
-# Metrics
+# --- Updated Metrics Panel ---
 c1, c2, c3 = st.columns(3)
 c1.metric("Total Scope", f"{int(total_scope)}")
-if missed > 0:
-    c2.metric("Missed at RG", f"{int(missed)}", delta="Risk", delta_color="inverse")
+
+if total_risk > 0:
+    c2.metric("Missed at RG", f"{int(missed)}", delta="Backlog Risk", delta_color="inverse")
+    if unassigned_volume > 0:
+        c3.metric("Unscheduled", f"{int(unassigned_volume)}", delta="Lack of Capacity", delta_color="inverse", help="Scope dropped because total truck capacity is < 100%")
 else:
     c2.metric("Status", "Success", delta="On Track")
 
