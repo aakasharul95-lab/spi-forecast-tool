@@ -43,7 +43,8 @@ for i in range(ui_truck_count):
         is_fractional = (i == ui_truck_count - 1 and fraction > 0)
         physical_size = fraction if is_fractional else 1.0
 
-        t_weight = st.sidebar.slider(f"T{i+1} Fill Rate (%)", 1, 100, 100, key=f"t_weight_{i}")
+        # UPDATED: Renamed back to Workload (%)
+        t_weight = st.slider(f"T{i+1} Workload (%)", 1, 100, 100, key=f"t_weight_{i}")
         trucks.append({
             "id": i+1, 
             "arrival": t_arr, 
