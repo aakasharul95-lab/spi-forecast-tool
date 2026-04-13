@@ -38,24 +38,16 @@ for i in range(ui_truck_count):
         t_arr = st.number_input(f"T{i+1} Arrival (YYWW)", value=default_arr)
         t_dep = st.number_input(f"T{i+1} Departure (YYWW)", value=t_arr + 8)
         
-        # Determine the exact physical size of this specific truck
+        # Calculate if this is a fractional remainder truck
         fraction = round(num_trucks_input % 1, 2)
-        is_fractional = (i == ui_truck_count - 1 and fraction > 0)
-        physical_size = fraction if is_fractional else 1.0
-        
-        if is_fractional:
-            st.info(f"Physical Availability: {fraction*100:.0f}% of a standard truck.")
+        if i == ui_truck_count - 1 and fraction > 0:
+            default_weight = max(1, int(fraction * 100))
+            st.info(f"Calculated as a {fraction} fractional truck.")
         else:
-            st.info(f"Physical Availability: 100% (Full Truck)")
+            default_weight = 100
 
-        t_weight = st.slider(f"T{i+1} Fill Rate (%)", 1, 100, 100)
-        trucks.append({
-            "id": i+1, 
-            "arrival": t_arr, 
-            "departure": t_dep, 
-            "weight": t_weight,
-            "physical_size": physical_size
-        })
+        t_weight = st.slider(f"T{i+1} Workload Weight", 1, 100, default_weight)
+        trucks.append({"id": i+1, "arrival": t_arr, "departure": t_dep, "weight": t_weight})
 
 st.sidebar.divider()
 st.sidebar.header("4. Phases")
@@ -142,23 +134,16 @@ demand_pre = total_scope * pre_work_pct
 demand_post = total_scope * post_work_pct
 demand_trucks_total = total_scope - (demand_pre + demand_post)
 
-# NEW LOGIC: True Absolute Capacity
-# We assume the project requires 'ui_truck_count' FULL trucks to be 100% complete.
-max_project_weight = ui_truck_count * 100.0
-
-total_effective_weight = 0
-for t in trucks:
-    # Effective weight = Physical availability * How much we fill it
-    t['effective_weight'] = t['physical_size'] * t['weight']
-    total_effective_weight += t['effective_weight']
+# Calculate absolute capacity
+total_weight = sum(t['weight'] for t in trucks)
+effective_denominator = max(100, total_weight)
 
 unassigned_volume = 0
-if total_effective_weight < max_project_weight:
-    unassigned_volume = demand_trucks_total * ((max_project_weight - total_effective_weight) / max_project_weight)
+if total_weight < 100:
+    unassigned_volume = demand_trucks_total * ((100 - total_weight) / 100)
 
 for t in trucks:
-    # Assign volume based strictly on its absolute fraction of the whole project
-    t['volume'] = demand_trucks_total * (t['effective_weight'] / max_project_weight)
+    t['volume'] = demand_trucks_total * (t['weight'] / effective_denominator)
 
 first_arrival_idx = min(t['arr_idx'] for t in trucks)
 
@@ -275,7 +260,7 @@ c1.metric("Total Scope", f"{int(total_scope)}")
 if total_risk > 0:
     c2.metric("Missed at RG", f"{int(missed)}", delta="Backlog Risk", delta_color="inverse")
     if unassigned_volume > 0:
-        c3.metric("Unscheduled", f"{int(unassigned_volume)}", delta="Lack of Capacity", delta_color="inverse", help="Scope dropped because total truck capacity/load is < 100%")
+        c3.metric("Unscheduled", f"{int(unassigned_volume)}", delta="Lack of Capacity", delta_color="inverse", help="Scope dropped because total truck capacity is < 100%")
 else:
     c2.metric("Status", "Success", delta="On Track")
 
