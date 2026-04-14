@@ -265,34 +265,47 @@ for name, wk in project_milestones.items():
         ax.axvline(idx, color=c, linestyle='-.')
         ax.text(idx, max_y*0.85, f" {name} ", color=c, rotation=90, bbox=bbox)
 
-# --- DETAILED HIGH-VISIBILITY METRIC ANNOTATIONS WITH DELTAS ---
+# --- DETAILED HIGH-VISIBILITY METRIC ANNOTATIONS AND SPAN LINES ---
 y_positions = [0.65, 0.45, 0.25] 
 target_milestones = [("RG", rg_week), ("SOP", sop_week), ("EG", eg_week)]
 
-prev_comp = 0 # Variable to track what was sent in the PREVIOUS milestone
+prev_idx = start_idx
+prev_comp = 0 
+span_y_level = max_y * 0.76  # The horizontal height for the dimension lines
 
 for i, (m_name, m_wk) in enumerate(target_milestones):
     idx, comp, miss = get_metrics_at_week(m_wk)
     
     if idx is not None:
-        # Calculate how many were sent strictly during this phase
         phase_sent = comp - prev_comp
         y_pos = max_y * y_positions[i]
         
-        # High-visibility styling
+        # 1. Draw the High-visibility Status Boxes
         if miss > 0.5:
             bg_color = "#dc3545" # Crimson Red
         else:
             bg_color = "#28a745" # Success Green
             
-        # Updated Annotation Text
-        box_text = f" {m_name} Status \n Total Sent: {int(comp)} \n Phase Sent: {int(phase_sent)} \n Missed: {int(miss)} "
+        box_text = f" {m_name} Status \n Sent: {int(comp)} \n Missed: {int(miss)} "
         ax.annotate(box_text, xy=(idx, 0), xytext=(idx - max(2, len(res_df)*0.03), y_pos),
                     arrowprops=dict(facecolor=bg_color, edgecolor='none', shrink=0.05, width=2.5, headwidth=8),
                     fontsize=12, fontweight='bold', color='white',
                     bbox=dict(boxstyle="round,pad=0.5", fc=bg_color, ec='none', alpha=0.95))
         
-        # Save the current completion to subtract from the next milestone
+        # 2. Draw the Horizontal Span Line (Dimension Line)
+        if prev_idx < idx:
+            # Draw double-headed arrow
+            ax.annotate('', xy=(prev_idx, span_y_level), xytext=(idx, span_y_level),
+                        arrowprops=dict(arrowstyle='<->', color='#555555', lw=1.5))
+            
+            # Place the text box in the middle of the line
+            mid_x = (prev_idx + idx) / 2
+            ax.text(mid_x, span_y_level + (max_y*0.015), f"{int(phase_sent)} IH", 
+                    ha='center', va='bottom', fontsize=10, fontweight='bold', color='#333333',
+                    bbox=dict(boxstyle="round,pad=0.2", fc="#fdfdfd", ec="#cccccc", alpha=0.95))
+        
+        # Update trackers for the next phase loop
+        prev_idx = idx
         prev_comp = comp
 
 ax.set_ylabel("Infoheaders")
@@ -313,7 +326,6 @@ def format_missed_label(miss_val):
         return f"❌ {int(miss_val)} Missed"
     return "✅ 0 Missed"
 
-# Extract metrics and calculate phase deltas for the bottom UI
 _, comp_rg, miss_rg = get_metrics_at_week(rg_week)
 _, comp_sop, miss_sop = get_metrics_at_week(sop_week)
 _, comp_eg, miss_eg = get_metrics_at_week(eg_week)
