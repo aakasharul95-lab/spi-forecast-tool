@@ -226,9 +226,11 @@ res_df['Cumulative_Sent'] = res_df['Sent'].cumsum()
 def get_metrics_at_week(wk):
     if wk in res_df['Week'].values:
         idx = res_df[res_df['Week'] == wk].index[0]
-        completed = res_df.loc[idx, 'Cumulative_Sent']
-        # Prevent negative floating point math
+        
+        # FIX: Apply round() to handle floating point fractions correctly before int conversion
+        completed = round(res_df.loc[idx, 'Cumulative_Sent'])
         missed = max(0, total_scope - completed)
+        
         return idx, completed, missed
     return None, 0, total_scope
 
