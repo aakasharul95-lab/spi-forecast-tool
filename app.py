@@ -200,7 +200,6 @@ backlog = 0
 for i in range(len(df)):
     new_work = 0
     
-    # FIX: Strictly strictly less than first_arrival_idx to prevent double-counting the arrival week
     if i >= start_idx and i < first_arrival_idx:
         new_work += rate_pre
         
@@ -301,14 +300,20 @@ st.pyplot(fig)
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Total Scope", f"{int(total_scope)}")
 
+# Helper function to dynamically change the icon based on missed count
+def format_missed_label(miss_val):
+    if miss_val > 0.5:
+        return f"❌ {int(miss_val)} Missed"
+    return "✅ 0 Missed"
+
 _, comp_rg, miss_rg = get_metrics_at_week(rg_week)
-c2.metric("Status at RG", f"❌ {int(miss_rg)} Missed", f"✅ {int(comp_rg)} Sent", delta_color="off")
+c2.metric("Status at RG", format_missed_label(miss_rg), f"✅ {int(comp_rg)} Sent", delta_color="off")
 
 _, comp_sop, miss_sop = get_metrics_at_week(sop_week)
-c3.metric("Status at SOP", f"❌ {int(miss_sop)} Missed", f"✅ {int(comp_sop)} Sent", delta_color="off")
+c3.metric("Status at SOP", format_missed_label(miss_sop), f"✅ {int(comp_sop)} Sent", delta_color="off")
 
 _, comp_eg, miss_eg = get_metrics_at_week(eg_week)
-c4.metric("Status at EG", f"❌ {int(miss_eg)} Missed", f"✅ {int(comp_eg)} Sent", delta_color="off")
+c4.metric("Status at EG", format_missed_label(miss_eg), f"✅ {int(comp_eg)} Sent", delta_color="off")
 
 # =========================================================
 # 4. EASTER EGG (v1.01)
