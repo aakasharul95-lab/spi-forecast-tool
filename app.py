@@ -23,10 +23,7 @@ ih_per_se = st.sidebar.number_input("IH per SE/Week", value=5.0, step=0.1)
 st.sidebar.divider()
 st.sidebar.header("3. Choose the number of trucks you will receive")
 
-# Number input stepping by 0.10
 num_trucks_input = st.sidebar.number_input("Number of Trucks", min_value=0.10, max_value=10.00, value=3.00, step=0.10, format="%.2f")
-
-# Round up to determine how many UI blocks to draw
 ui_truck_count = math.ceil(num_trucks_input)
 
 trucks = []
@@ -202,10 +199,14 @@ backlog = 0
 
 for i in range(len(df)):
     new_work = 0
-    if i >= start_idx and i <= first_arrival_idx:
+    
+    # FIX: Strictly strictly less than first_arrival_idx to prevent double-counting the arrival week
+    if i >= start_idx and i < first_arrival_idx:
         new_work += rate_pre
+        
     if i in gap_indices:
         new_work += rate_post
+        
     for t in trucks:
         if t['sum_curve'] > 0:
             new_work += (t['raw_curve'][i] / t['sum_curve']) * t['volume']
@@ -219,7 +220,7 @@ for i in range(len(df)):
 res_df = pd.DataFrame(data)
 res_df = res_df.merge(df, left_on='Index', right_on='Index')
 
-# Track cumulative sent infoheaders to power the new metrics
+# Track cumulative sent infoheaders
 res_df['Cumulative_Sent'] = res_df['Sent'].cumsum()
 
 # Helper function to grab metrics at specific milestone weeks
@@ -227,8 +228,8 @@ def get_metrics_at_week(wk):
     if wk in res_df['Week'].values:
         idx = res_df[res_df['Week'] == wk].index[0]
         completed = res_df.loc[idx, 'Cumulative_Sent']
-        # Missed is simply Total Scope minus what has been successfully processed by this week
-        missed = total_scope - completed
+        # Prevent negative floating point math
+        missed = max(0, total_scope - completed)
         return idx, completed, missed
     return None, 0, total_scope
 
@@ -266,8 +267,7 @@ for name, wk in project_milestones.items():
         ax.axvline(idx, color=c, linestyle='-.')
         ax.text(idx, max_y*0.85, f" {name} ", color=c, rotation=90, bbox=bbox)
 
-# --- DETAILED METRIC ANNOTATIONS ---
-# Stagger the Y-positions so the boxes don't overlap if milestones are close together
+# --- DETAILED HIGH-VISIBILITY METRIC ANNOTATIONS ---
 y_positions = [0.65, 0.45, 0.25] 
 target_milestones = [("RG", rg_week), ("SOP", sop_week), ("EG", eg_week)]
 
@@ -276,14 +276,17 @@ for i, (m_name, m_wk) in enumerate(target_milestones):
     if idx is not None:
         y_pos = max_y * y_positions[i]
         
-        # Color the box border red if there are missed IH, green if perfect
-        border_color = "red" if miss > 1 else "green"
-        
-        box_text = f"{m_name} Status\n✅ Sent: {int(comp)}\n❌ Missed: {int(miss)}"
+        # High-visibility styling
+        if miss > 0.5:
+            bg_color = "#dc3545" # Crimson Red
+        else:
+            bg_color = "#28a745" # Success Green
+            
+        box_text = f" {m_name} Status \n Sent: {int(comp)} \n Missed: {int(miss)} "
         ax.annotate(box_text, xy=(idx, 0), xytext=(idx - max(2, len(res_df)*0.03), y_pos),
-                    arrowprops=dict(facecolor='gray', shrink=0.05, width=1, headwidth=6),
-                    fontsize=11, fontweight='bold', color='black',
-                    bbox=dict(boxstyle="round,pad=0.5", fc="#fdfdfd", ec=border_color, lw=2, alpha=0.95))
+                    arrowprops=dict(facecolor=bg_color, edgecolor='none', shrink=0.05, width=2.5, headwidth=8),
+                    fontsize=12, fontweight='bold', color='white',
+                    bbox=dict(boxstyle="round,pad=0.5", fc=bg_color, ec='none', alpha=0.95))
 
 ax.set_ylabel("Infoheaders")
 ax.grid(True, alpha=0.3)
