@@ -38,7 +38,6 @@ for i in range(ui_truck_count):
         t_arr = st.number_input(f"T{i+1} Arrival (YYWW)", value=default_arr)
         t_dep = st.number_input(f"T{i+1} Departure (YYWW)", value=t_arr + 8)
         
-        # Determine the exact physical size of this specific truck (UI popups removed)
         fraction = round(num_trucks_input % 1, 2)
         is_fractional = (i == ui_truck_count - 1 and fraction > 0)
         physical_size = fraction if is_fractional else 1.0
@@ -62,15 +61,24 @@ fdg_week = st.sidebar.number_input("FDG Week", value=2532)
 c_build_week = st.sidebar.number_input("C-Build Week", value=2548)
 fig_week = st.sidebar.number_input("FIG Week", value=2605)
 rg_week = st.sidebar.number_input("RG Deadline", value=2620)
+sop_week = st.sidebar.number_input("SOP Milestone", value=2630)
+eg_week = st.sidebar.number_input("EG Milestone", value=2640)
 
 # =========================================================
 # 2. LOGIC ENGINE
 # =========================================================
 max_capacity = se_count * ih_per_se
-project_milestones = {"FDG": fdg_week, "C-Build": c_build_week, "FIG": fig_week, "RG": rg_week}
+project_milestones = {
+    "FDG": fdg_week, 
+    "C-Build": c_build_week, 
+    "FIG": fig_week, 
+    "RG": rg_week, 
+    "SOP": sop_week, 
+    "EG": eg_week
+}
 
 # --- Dynamic Timeline ---
-all_dates = [work_start_week, fdg_week, c_build_week, fig_week, rg_week, 2530]
+all_dates = [work_start_week, fdg_week, c_build_week, fig_week, rg_week, sop_week, eg_week, 2530]
 for t in trucks:
     all_dates.extend([t['arrival'], t['departure']])
 
@@ -137,7 +145,6 @@ demand_pre = total_scope * pre_work_pct
 demand_post = total_scope * post_work_pct
 demand_trucks_total = total_scope - (demand_pre + demand_post)
 
-# The project physically demands 'ui_truck_count' full trucks to reach 100%
 max_project_weight = ui_truck_count * 100.0
 
 total_effective_weight = 0
@@ -146,7 +153,6 @@ for t in trucks:
     total_effective_weight += t['effective_weight']
 
 unassigned_volume = 0
-# If the team doesn't have the physical test-bench time, the work is left behind.
 if total_effective_weight < max_project_weight:
     unassigned_volume = demand_trucks_total * ((max_project_weight - total_effective_weight) / max_project_weight)
 
@@ -157,7 +163,6 @@ first_arrival_idx = min(t['arr_idx'] for t in trucks)
 
 # --- Rates ---
 dur_pre = first_arrival_idx - start_idx
-# Catch impossible pre-work (if trucks arrive before work starts)
 if dur_pre > 0:
     rate_pre = demand_pre / dur_pre
 else:
@@ -170,7 +175,6 @@ gap_indices = [
     if not any(start <= i <= end for start, end in truck_windows)
 ]
 
-# Catch impossible post-work (if RG is set too early to allow gaps)
 if len(gap_indices) > 0:
     rate_post = demand_post / len(gap_indices)
 else:
@@ -180,7 +184,6 @@ else:
 # --- Bell Curves ---
 for t in trucks:
     curve = []
-    # HARD CUTOFF: Bell curve generation ends strictly at RG or Departure, whichever is first.
     cutoff_idx = min(rg_idx, t['dep_idx'])
     
     for i in range(len(df)):
@@ -216,12 +219,25 @@ for i in range(len(df)):
 res_df = pd.DataFrame(data)
 res_df = res_df.merge(df, left_on='Index', right_on='Index')
 
+# Track cumulative sent infoheaders to power the new metrics
+res_df['Cumulative_Sent'] = res_df['Sent'].cumsum()
+
+# Helper function to grab metrics at specific milestone weeks
+def get_metrics_at_week(wk):
+    if wk in res_df['Week'].values:
+        idx = res_df[res_df['Week'] == wk].index[0]
+        completed = res_df.loc[idx, 'Cumulative_Sent']
+        # Missed is simply Total Scope minus what has been successfully processed by this week
+        missed = total_scope - completed
+        return idx, completed, missed
+    return None, 0, total_scope
+
 # =========================================================
 # 3. VISUALIZATION
 # =========================================================
 fig, ax = plt.subplots(figsize=(16, 7))
 
-ax.bar(res_df['Index'], res_df['Sent'], color='#005f9e', alpha=0.9, label='Team Output')
+ax.bar(res_df['Index'], res_df['Sent'], color='#005f9e', alpha=0.9, label='Team Output (Sent IH)')
 ax.plot(res_df['Index'], res_df['Gen'], color='#333333', linestyle='--', linewidth=3, label='Work Generated')
 
 max_y = max(res_df['Gen'].max(), max_capacity)
@@ -242,7 +258,7 @@ for t in trucks:
 ax.axvline(start_idx, color='blue', linestyle='-.')
 ax.text(start_idx, max_y*1.1, "Work Start", color='blue', ha='center', bbox=bbox)
 
-gate_colors = {"FDG": "purple", "C-Build": "#d4af37", "FIG": "brown", "RG": "black"}
+gate_colors = {"FDG": "purple", "C-Build": "#d4af37", "FIG": "brown", "RG": "black", "SOP": "darkblue", "EG": "darkgreen"}
 for name, wk in project_milestones.items():
     if wk in res_df['Week'].values:
         idx = res_df[res_df['Week'] == wk].index[0]
@@ -250,16 +266,24 @@ for name, wk in project_milestones.items():
         ax.axvline(idx, color=c, linestyle='-.')
         ax.text(idx, max_y*0.85, f" {name} ", color=c, rotation=90, bbox=bbox)
 
-# --- COMBINED RISK ANNOTATION ---
-backlog_at_rg = res_df[res_df['Week'] == rg_week]['Backlog'].values[0]
-total_missed = backlog_at_rg + unassigned_volume
+# --- DETAILED METRIC ANNOTATIONS ---
+# Stagger the Y-positions so the boxes don't overlap if milestones are close together
+y_positions = [0.65, 0.45, 0.25] 
+target_milestones = [("RG", rg_week), ("SOP", sop_week), ("EG", eg_week)]
 
-if total_missed > 1:
-    ax.annotate(f'MISSED: {int(total_missed)} IH', xy=(rg_idx, 0), xytext=(rg_idx-5, max_y*0.5),
-                arrowprops=dict(facecolor='red', shrink=0.05), fontsize=14, color='white', bbox=dict(boxstyle="round", fc="red"))
-    ax.bar(rg_idx, max_y*0.4, width=1, color='red', alpha=0.5)
-else:
-    ax.text(rg_idx, max_y*0.5, "✅ ON TARGET", color='green', ha='center', fontsize=16, fontweight='bold', bbox=bbox)
+for i, (m_name, m_wk) in enumerate(target_milestones):
+    idx, comp, miss = get_metrics_at_week(m_wk)
+    if idx is not None:
+        y_pos = max_y * y_positions[i]
+        
+        # Color the box border red if there are missed IH, green if perfect
+        border_color = "red" if miss > 1 else "green"
+        
+        box_text = f"{m_name} Status\n✅ Sent: {int(comp)}\n❌ Missed: {int(miss)}"
+        ax.annotate(box_text, xy=(idx, 0), xytext=(idx - max(2, len(res_df)*0.03), y_pos),
+                    arrowprops=dict(facecolor='gray', shrink=0.05, width=1, headwidth=6),
+                    fontsize=11, fontweight='bold', color='black',
+                    bbox=dict(boxstyle="round,pad=0.5", fc="#fdfdfd", ec=border_color, lw=2, alpha=0.95))
 
 ax.set_ylabel("Infoheaders")
 ax.grid(True, alpha=0.3)
@@ -270,14 +294,18 @@ ax.set_xticklabels(res_df['Week_Str'][::step], rotation=90)
 
 st.pyplot(fig)
 
-# --- SIMPLIFIED METRICS PANEL ---
-c1, c2, c3 = st.columns(3)
+# --- EXPANDED METRICS PANEL ---
+c1, c2, c3, c4 = st.columns(4)
 c1.metric("Total Scope", f"{int(total_scope)}")
 
-if total_missed > 0:
-    c2.metric("Missed at RG", f"{int(total_missed)}", delta="Risk", delta_color="inverse")
-else:
-    c2.metric("Status", "Success", delta="On Track")
+_, comp_rg, miss_rg = get_metrics_at_week(rg_week)
+c2.metric("Status at RG", f"❌ {int(miss_rg)} Missed", f"✅ {int(comp_rg)} Sent", delta_color="off")
+
+_, comp_sop, miss_sop = get_metrics_at_week(sop_week)
+c3.metric("Status at SOP", f"❌ {int(miss_sop)} Missed", f"✅ {int(comp_sop)} Sent", delta_color="off")
+
+_, comp_eg, miss_eg = get_metrics_at_week(eg_week)
+c4.metric("Status at EG", f"❌ {int(miss_eg)} Missed", f"✅ {int(comp_eg)} Sent", delta_color="off")
 
 # =========================================================
 # 4. EASTER EGG (v1.01)
