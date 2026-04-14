@@ -23,7 +23,10 @@ ih_per_se = st.sidebar.number_input("IH per SE/Week", value=5.0, step=0.1)
 st.sidebar.divider()
 st.sidebar.header("3. Choose the number of trucks you will receive")
 
+# Number input stepping by 0.10
 num_trucks_input = st.sidebar.number_input("Number of Trucks", min_value=0.10, max_value=10.00, value=3.00, step=0.10, format="%.2f")
+
+# Round up to determine how many UI blocks to draw
 ui_truck_count = math.ceil(num_trucks_input)
 
 trucks = []
@@ -35,6 +38,7 @@ for i in range(ui_truck_count):
         t_arr = st.number_input(f"T{i+1} Arrival (YYWW)", value=default_arr)
         t_dep = st.number_input(f"T{i+1} Departure (YYWW)", value=t_arr + 8)
         
+        # Determine the exact physical size of this specific truck (UI popups removed)
         fraction = round(num_trucks_input % 1, 2)
         is_fractional = (i == ui_truck_count - 1 and fraction > 0)
         physical_size = fraction if is_fractional else 1.0
@@ -140,18 +144,20 @@ for t in trucks:
     t['effective_weight'] = t['physical_size'] * t['weight']
     total_effective_weight += t['effective_weight']
 
+# OPTION 1 APPLIED: The "Magic Truck" Bypass
+# We forcefully set unassigned volume to 0 so all work must enter the building
 unassigned_volume = 0
-if total_effective_weight < max_project_weight:
-    unassigned_volume = demand_trucks_total * ((max_project_weight - total_effective_weight) / max_project_weight)
+
+# Calculate relative denominator to distribute 100% of the load across whatever trucks exist
+safe_denominator = max(0.01, total_effective_weight)
 
 for t in trucks:
-    t['volume'] = demand_trucks_total * (t['effective_weight'] / max_project_weight)
+    t['volume'] = demand_trucks_total * (t['effective_weight'] / safe_denominator)
 
 first_arrival_idx = min(t['arr_idx'] for t in trucks)
 
 # --- Rates ---
 dur_pre = first_arrival_idx - start_idx
-# NEW: Catch impossible pre-work
 if dur_pre > 0:
     rate_pre = demand_pre / dur_pre
 else:
@@ -164,7 +170,6 @@ gap_indices = [
     if not any(start <= i <= end for start, end in truck_windows)
 ]
 
-# NEW: Catch impossible post-work
 if len(gap_indices) > 0:
     rate_post = demand_post / len(gap_indices)
 else:
@@ -174,7 +179,7 @@ else:
 # --- Bell Curves ---
 for t in trucks:
     curve = []
-    # NEW: Hard Cutoff exactly at Departure or RG (whichever is earlier)
+    # Hard Cutoff exactly at Departure or RG (whichever is earlier)
     cutoff_idx = min(rg_idx, t['dep_idx'])
     
     for i in range(len(df)):
