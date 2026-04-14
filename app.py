@@ -226,11 +226,8 @@ res_df['Cumulative_Sent'] = res_df['Sent'].cumsum()
 def get_metrics_at_week(wk):
     if wk in res_df['Week'].values:
         idx = res_df[res_df['Week'] == wk].index[0]
-        
-        # FIX: Apply round() to handle floating point fractions correctly before int conversion
         completed = round(res_df.loc[idx, 'Cumulative_Sent'])
         missed = max(0, total_scope - completed)
-        
         return idx, completed, missed
     return None, 0, total_scope
 
@@ -268,13 +265,18 @@ for name, wk in project_milestones.items():
         ax.axvline(idx, color=c, linestyle='-.')
         ax.text(idx, max_y*0.85, f" {name} ", color=c, rotation=90, bbox=bbox)
 
-# --- DETAILED HIGH-VISIBILITY METRIC ANNOTATIONS ---
+# --- DETAILED HIGH-VISIBILITY METRIC ANNOTATIONS WITH DELTAS ---
 y_positions = [0.65, 0.45, 0.25] 
 target_milestones = [("RG", rg_week), ("SOP", sop_week), ("EG", eg_week)]
 
+prev_comp = 0 # Variable to track what was sent in the PREVIOUS milestone
+
 for i, (m_name, m_wk) in enumerate(target_milestones):
     idx, comp, miss = get_metrics_at_week(m_wk)
+    
     if idx is not None:
+        # Calculate how many were sent strictly during this phase
+        phase_sent = comp - prev_comp
         y_pos = max_y * y_positions[i]
         
         # High-visibility styling
@@ -283,11 +285,15 @@ for i, (m_name, m_wk) in enumerate(target_milestones):
         else:
             bg_color = "#28a745" # Success Green
             
-        box_text = f" {m_name} Status \n Sent: {int(comp)} \n Missed: {int(miss)} "
+        # Updated Annotation Text
+        box_text = f" {m_name} Status \n Total Sent: {int(comp)} \n Phase Sent: {int(phase_sent)} \n Missed: {int(miss)} "
         ax.annotate(box_text, xy=(idx, 0), xytext=(idx - max(2, len(res_df)*0.03), y_pos),
                     arrowprops=dict(facecolor=bg_color, edgecolor='none', shrink=0.05, width=2.5, headwidth=8),
                     fontsize=12, fontweight='bold', color='white',
                     bbox=dict(boxstyle="round,pad=0.5", fc=bg_color, ec='none', alpha=0.95))
+        
+        # Save the current completion to subtract from the next milestone
+        prev_comp = comp
 
 ax.set_ylabel("Infoheaders")
 ax.grid(True, alpha=0.3)
@@ -302,20 +308,23 @@ st.pyplot(fig)
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Total Scope", f"{int(total_scope)}")
 
-# Helper function to dynamically change the icon based on missed count
 def format_missed_label(miss_val):
     if miss_val > 0.5:
         return f"❌ {int(miss_val)} Missed"
     return "✅ 0 Missed"
 
+# Extract metrics and calculate phase deltas for the bottom UI
 _, comp_rg, miss_rg = get_metrics_at_week(rg_week)
-c2.metric("Status at RG", format_missed_label(miss_rg), f"✅ {int(comp_rg)} Sent", delta_color="off")
-
 _, comp_sop, miss_sop = get_metrics_at_week(sop_week)
-c3.metric("Status at SOP", format_missed_label(miss_sop), f"✅ {int(comp_sop)} Sent", delta_color="off")
-
 _, comp_eg, miss_eg = get_metrics_at_week(eg_week)
-c4.metric("Status at EG", format_missed_label(miss_eg), f"✅ {int(comp_eg)} Sent", delta_color="off")
+
+phase_rg = comp_rg
+phase_sop = comp_sop - comp_rg
+phase_eg = comp_eg - comp_sop
+
+c2.metric("Status at RG", format_missed_label(miss_rg), f"Total Sent: {int(comp_rg)} (+{int(phase_rg)} Phase)", delta_color="off")
+c3.metric("Status at SOP", format_missed_label(miss_sop), f"Total Sent: {int(comp_sop)} (+{int(phase_sop)} Phase)", delta_color="off")
+c4.metric("Status at EG", format_missed_label(miss_eg), f"Total Sent: {int(comp_eg)} (+{int(phase_eg)} Phase)", delta_color="off")
 
 # =========================================================
 # 4. EASTER EGG (v1.01)
