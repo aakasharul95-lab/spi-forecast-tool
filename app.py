@@ -132,11 +132,12 @@ except IndexError:
     st.error("⚠️ Critical Date Error: Please ensure all dates follow YYWW format.")
     st.stop()
 
-# --- Volume Calculations ---
+# --- Volume Calculations (Absolute Capacity Model) ---
 demand_pre = total_scope * pre_work_pct
 demand_post = total_scope * post_work_pct
 demand_trucks_total = total_scope - (demand_pre + demand_post)
 
+# The project physically demands 'ui_truck_count' full trucks to reach 100%
 max_project_weight = ui_truck_count * 100.0
 
 total_effective_weight = 0
@@ -144,20 +145,19 @@ for t in trucks:
     t['effective_weight'] = t['physical_size'] * t['weight']
     total_effective_weight += t['effective_weight']
 
-# OPTION 1 APPLIED: The "Magic Truck" Bypass
-# We forcefully set unassigned volume to 0 so all work must enter the building
 unassigned_volume = 0
-
-# Calculate relative denominator to distribute 100% of the load across whatever trucks exist
-safe_denominator = max(0.01, total_effective_weight)
+# If the team doesn't have the physical test-bench time, the work is left behind.
+if total_effective_weight < max_project_weight:
+    unassigned_volume = demand_trucks_total * ((max_project_weight - total_effective_weight) / max_project_weight)
 
 for t in trucks:
-    t['volume'] = demand_trucks_total * (t['effective_weight'] / safe_denominator)
+    t['volume'] = demand_trucks_total * (t['effective_weight'] / max_project_weight)
 
 first_arrival_idx = min(t['arr_idx'] for t in trucks)
 
 # --- Rates ---
 dur_pre = first_arrival_idx - start_idx
+# Catch impossible pre-work (if trucks arrive before work starts)
 if dur_pre > 0:
     rate_pre = demand_pre / dur_pre
 else:
@@ -170,6 +170,7 @@ gap_indices = [
     if not any(start <= i <= end for start, end in truck_windows)
 ]
 
+# Catch impossible post-work (if RG is set too early to allow gaps)
 if len(gap_indices) > 0:
     rate_post = demand_post / len(gap_indices)
 else:
@@ -179,7 +180,7 @@ else:
 # --- Bell Curves ---
 for t in trucks:
     curve = []
-    # Hard Cutoff exactly at Departure or RG (whichever is earlier)
+    # HARD CUTOFF: Bell curve generation ends strictly at RG or Departure, whichever is first.
     cutoff_idx = min(rg_idx, t['dep_idx'])
     
     for i in range(len(df)):
