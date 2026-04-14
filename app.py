@@ -23,10 +23,7 @@ ih_per_se = st.sidebar.number_input("IH per SE/Week", value=5.0, step=0.1)
 st.sidebar.divider()
 st.sidebar.header("3. Choose the number of trucks you will receive")
 
-# UPDATED: Number input stepping by 0.10
 num_trucks_input = st.sidebar.number_input("Number of Trucks", min_value=0.10, max_value=10.00, value=3.00, step=0.10, format="%.2f")
-
-# Round up to determine how many UI blocks to draw
 ui_truck_count = math.ceil(num_trucks_input)
 
 trucks = []
@@ -38,12 +35,10 @@ for i in range(ui_truck_count):
         t_arr = st.number_input(f"T{i+1} Arrival (YYWW)", value=default_arr)
         t_dep = st.number_input(f"T{i+1} Departure (YYWW)", value=t_arr + 8)
         
-        # Determine the exact physical size of this specific truck (UI popups removed)
         fraction = round(num_trucks_input % 1, 2)
         is_fractional = (i == ui_truck_count - 1 and fraction > 0)
         physical_size = fraction if is_fractional else 1.0
 
-        # UPDATED: Renamed back to Workload (%)
         t_weight = st.slider(f"T{i+1} Workload (%)", 1, 100, 100, key=f"t_weight_{i}")
         trucks.append({
             "id": i+1, 
@@ -156,7 +151,12 @@ first_arrival_idx = min(t['arr_idx'] for t in trucks)
 
 # --- Rates ---
 dur_pre = first_arrival_idx - start_idx
-rate_pre = demand_pre / dur_pre if dur_pre > 0 else 0
+# NEW: Catch impossible pre-work
+if dur_pre > 0:
+    rate_pre = demand_pre / dur_pre
+else:
+    rate_pre = 0
+    unassigned_volume += demand_pre
 
 truck_windows = [(t['arr_idx'], t['dep_idx']) for t in trucks]
 gap_indices = [
@@ -164,17 +164,26 @@ gap_indices = [
     if not any(start <= i <= end for start, end in truck_windows)
 ]
 
+# NEW: Catch impossible post-work
 if len(gap_indices) > 0:
     rate_post = demand_post / len(gap_indices)
 else:
     rate_post = 0
+    unassigned_volume += demand_post
 
 # --- Bell Curves ---
 for t in trucks:
     curve = []
+    # NEW: Hard Cutoff exactly at Departure or RG (whichever is earlier)
+    cutoff_idx = min(rg_idx, t['dep_idx'])
+    
     for i in range(len(df)):
-        val = norm.pdf(i, t['center'], t['sigma']) if t['sigma'] > 0 else 0
+        if i <= cutoff_idx and t['sigma'] > 0:
+            val = norm.pdf(i, t['center'], t['sigma'])
+        else:
+            val = 0
         curve.append(val)
+        
     t['raw_curve'] = curve
     t['sum_curve'] = sum(curve)
 
@@ -239,7 +248,6 @@ for name, wk in project_milestones.items():
 backlog_at_rg = res_df[res_df['Week'] == rg_week]['Backlog'].values[0]
 total_missed = backlog_at_rg + unassigned_volume
 
-# Only display "MISSED" text.
 if total_missed > 1:
     ax.annotate(f'MISSED: {int(total_missed)} IH', xy=(rg_idx, 0), xytext=(rg_idx-5, max_y*0.5),
                 arrowprops=dict(facecolor='red', shrink=0.05), fontsize=14, color='white', bbox=dict(boxstyle="round", fc="red"))
