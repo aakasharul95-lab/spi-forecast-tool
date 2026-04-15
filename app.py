@@ -7,7 +7,7 @@ import math
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Workpackage Request Estimation", layout="wide")
-st.title("🚛 Workpackage Request Estimation")
+st.title("🚛 Workpackage Request Estimation (Unconstrained Capacity Mode)")
 
 # =========================================================
 # 1. SIDEBAR CONFIGURATION
@@ -51,7 +51,7 @@ for i in range(ui_truck_count):
 st.sidebar.divider()
 st.sidebar.header("4. Phases")
 pre_work_pct = st.sidebar.slider("Pre-Work % ", 0.0, 0.5, 0.10)
-post_work_pct = st.sidebar.slider("Post-Work % ", 0.0, 0.5, 0.10, help="This work is distributed in the empty weeks BETWEEN trucks and AFTER the last truck.")
+post_work_pct = st.sidebar.slider("Post-Work % ", 0.0, 0.5, 0.10)
 
 st.sidebar.header("5. Milestones")
 fdg_week = st.sidebar.number_input("FDG Week", value=2532)
@@ -137,14 +137,12 @@ except IndexError:
     st.error("⚠️ Critical Date Error: Please ensure all dates follow YYWW format.")
     st.stop()
 
-# --- Volume Calculations (Infinite Truck / Relative Capacity Model) ---
+# --- Volume Calculations (Visual Truck Only) ---
 demand_pre = total_scope * pre_work_pct
 demand_post = total_scope * post_work_pct
 demand_trucks_total = total_scope - (demand_pre + demand_post)
 
-unassigned_volume = 0
 total_effective_weight = 0
-
 for t in trucks:
     t['effective_weight'] = t['physical_size'] * t['weight']
     total_effective_weight += t['effective_weight']
@@ -156,62 +154,47 @@ for t in trucks:
 
 first_arrival_idx = min(t['arr_idx'] for t in trucks)
 
-# --- Rates ---
 dur_pre = first_arrival_idx - start_idx
-if dur_pre > 0:
-    rate_pre = demand_pre / dur_pre
-else:
-    rate_pre = 0
-    unassigned_volume += demand_pre
+rate_pre = demand_pre / dur_pre if dur_pre > 0 else 0
 
 truck_windows = [(t['arr_idx'], t['dep_idx']) for t in trucks]
 gap_indices = [
     i for i in range(first_arrival_idx + 1, rg_idx + 1)
     if not any(start <= i <= end for start, end in truck_windows)
 ]
+rate_post = demand_post / len(gap_indices) if len(gap_indices) > 0 else 0
 
-if len(gap_indices) > 0:
-    rate_post = demand_post / len(gap_indices)
-else:
-    rate_post = 0
-    unassigned_volume += demand_post
-
-# --- Bell Curves ---
 for t in trucks:
     curve = []
-    
     for i in range(len(df)):
-        if t['sigma'] > 0:
-            val = norm.pdf(i, t['center'], t['sigma'])
-        else:
-            val = 0
+        val = norm.pdf(i, t['center'], t['sigma']) if t['sigma'] > 0 else 0
         curve.append(val)
-        
     t['raw_curve'] = curve
     t['sum_curve'] = sum(curve)
 
-# --- Simulation Loop ---
+# --- UNCONSTRAINED SIMULATION LOOP ---
 data = []
-backlog = 0
+# The entire scope is dumped onto the SE team immediately
+unconstrained_backlog = total_scope 
 
 for i in range(len(df)):
-    new_work = 0
-    
+    # Calculate the visual truck schedule (but do not give it to the SEs)
+    gen_visual = 0
     if i >= start_idx and i < first_arrival_idx:
-        new_work += rate_pre
-        
+        gen_visual += rate_pre
     if i in gap_indices:
-        new_work += rate_post
-        
+        gen_visual += rate_post
     for t in trucks:
         if t['sum_curve'] > 0:
-            new_work += (t['raw_curve'][i] / t['sum_curve']) * t['volume']
+            gen_visual += (t['raw_curve'][i] / t['sum_curve']) * t['volume']
 
-    pool = new_work + backlog
-    processed = min(pool, max_capacity)
-    backlog = pool - processed
+    # The SE Team processes work as fast as they can, limited only by headcount
+    processed = 0
+    if i >= start_idx and unconstrained_backlog > 0:
+        processed = min(unconstrained_backlog, max_capacity)
+        unconstrained_backlog -= processed
     
-    data.append({"Index": i, "Gen": new_work, "Sent": processed, "Backlog": backlog})
+    data.append({"Index": i, "Gen": gen_visual, "Sent": processed, "Backlog": unconstrained_backlog})
 
 res_df = pd.DataFrame(data)
 res_df = res_df.merge(df, left_on='Index', right_on='Index')
@@ -232,8 +215,9 @@ def get_metrics_at_week(wk):
 # =========================================================
 fig, ax = plt.subplots(figsize=(16, 7))
 
-ax.bar(res_df['Index'], res_df['Sent'], color='#005f9e', alpha=0.9, label='Team Output (Sent IH)')
-ax.plot(res_df['Index'], res_df['Gen'], color='#333333', linestyle='--', linewidth=3, label='Work Generated')
+# Updated Legend to reflect the Unconstrained mode
+ax.bar(res_df['Index'], res_df['Sent'], color='#005f9e', alpha=0.9, label='Team Output (Unconstrained)')
+ax.plot(res_df['Index'], res_df['Gen'], color='#333333', linestyle='--', linewidth=3, label='Truck Schedule (Visual Only)')
 
 max_y = max(res_df['Gen'].max(), max_capacity)
 if max_y == 0: max_y = 10
@@ -261,7 +245,6 @@ for name, wk in project_milestones.items():
         ax.axvline(idx, color=c, linestyle='-.')
         ax.text(idx, max_y*0.85, f" {name} ", color=c, rotation=90, bbox=bbox)
 
-# --- DETAILED HIGH-VISIBILITY METRIC ANNOTATIONS AND SPAN LINES ---
 y_positions = [0.65, 0.45, 0.25] 
 target_milestones = [("RG", rg_week), ("SOP", sop_week), ("EG", eg_week)]
 
@@ -276,18 +259,15 @@ for i, (m_name, m_wk) in enumerate(target_milestones):
         phase_sent = comp - prev_comp
         y_pos = max_y * y_positions[i]
         
-        # Calculate percentages safely to avoid division by zero
         safe_total = max(1, total_scope)
         sent_pct = (comp / safe_total) * 100
         miss_pct = (miss / safe_total) * 100
         
-        # 1. Draw the High-visibility Status Boxes
         if miss > 0.5:
-            bg_color = "#dc3545" # Crimson Red
+            bg_color = "#dc3545" 
         else:
-            bg_color = "#28a745" # Success Green
+            bg_color = "#28a745" 
             
-        # FIX: Added percentage calculations directly to the label text
         box_text = f" {m_name} Status \n Sent: {int(comp)} ({sent_pct:.1f}%) \n Missed: {int(miss)} ({miss_pct:.1f}%) "
         
         ax.annotate(box_text, xy=(idx, 0), xytext=(idx - max(2, len(res_df)*0.03), y_pos),
@@ -295,7 +275,6 @@ for i, (m_name, m_wk) in enumerate(target_milestones):
                     fontsize=12, fontweight='bold', color='white',
                     bbox=dict(boxstyle="round,pad=0.5", fc=bg_color, ec='none', alpha=0.95))
         
-        # 2. Draw the Horizontal Span Line (Dimension Line)
         if prev_idx < idx:
             ax.annotate('', xy=(prev_idx, span_y_level), xytext=(idx, span_y_level),
                         arrowprops=dict(arrowstyle='<->', color='#555555', lw=1.5))
