@@ -222,7 +222,6 @@ res_df = res_df.merge(df, left_on='Index', right_on='Index')
 # Track cumulative sent infoheaders
 res_df['Cumulative_Sent'] = res_df['Sent'].cumsum()
 
-# Helper function to grab metrics at specific milestone weeks
 def get_metrics_at_week(wk):
     if wk in res_df['Week'].values:
         idx = res_df[res_df['Week'] == wk].index[0]
@@ -242,7 +241,8 @@ ax.plot(res_df['Index'], res_df['Gen'], color='#333333', linestyle='--', linewid
 max_y = max(res_df['Gen'].max(), max_capacity)
 if max_y == 0: max_y = 10
 
-ax.set_ylim(0, max_y * (1.2 + 0.05 * ui_truck_count))
+# FIX: Increased the graph ceiling significantly to make room for the dimension line at the very top
+ax.set_ylim(0, max_y * (1.3 + 0.05 * ui_truck_count))
 
 bbox = dict(boxstyle="round,pad=0.3", fc="white", ec="none", alpha=0.85)
 
@@ -255,7 +255,7 @@ for t in trucks:
     ax.text(t['dep_idx'], max_y*(1.0 + 0.05*t['id']), f"T{t['id']} Dep", color='orange', ha='center', fontweight='bold', bbox=bbox)
 
 ax.axvline(start_idx, color='blue', linestyle='-.')
-ax.text(start_idx, max_y*1.1, "Work Start", color='blue', ha='center', bbox=bbox)
+ax.text(start_idx, max_y*1.0, "Work Start", color='blue', ha='center', bbox=bbox)
 
 gate_colors = {"FDG": "purple", "C-Build": "#d4af37", "FIG": "brown", "RG": "black", "SOP": "darkblue", "EG": "darkgreen"}
 for name, wk in project_milestones.items():
@@ -271,8 +271,9 @@ target_milestones = [("RG", rg_week), ("SOP", sop_week), ("EG", eg_week)]
 
 prev_idx = start_idx
 prev_comp = 0 
-# FIX: Moved the horizontal span line high above the peaks so it doesn't overlap the boxes
-span_y_level = max_y * 1.05 
+
+# FIX: Set the dimension line safely above the highest possible truck label
+span_y_level = max_y * (1.15 + 0.05 * ui_truck_count) 
 
 for i, (m_name, m_wk) in enumerate(target_milestones):
     idx, comp, miss = get_metrics_at_week(m_wk)
@@ -295,17 +296,14 @@ for i, (m_name, m_wk) in enumerate(target_milestones):
         
         # 2. Draw the Horizontal Span Line (Dimension Line)
         if prev_idx < idx:
-            # Draw double-headed arrow
             ax.annotate('', xy=(prev_idx, span_y_level), xytext=(idx, span_y_level),
                         arrowprops=dict(arrowstyle='<->', color='#555555', lw=1.5))
             
-            # Place the text box in the middle of the line
             mid_x = (prev_idx + idx) / 2
             ax.text(mid_x, span_y_level + (max_y*0.015), f"{int(phase_sent)} IH", 
                     ha='center', va='bottom', fontsize=10, fontweight='bold', color='#333333',
                     bbox=dict(boxstyle="round,pad=0.2", fc="#fdfdfd", ec="#cccccc", alpha=0.95))
         
-        # Update trackers for the next phase loop
         prev_idx = idx
         prev_comp = comp
 
