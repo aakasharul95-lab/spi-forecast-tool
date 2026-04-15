@@ -51,7 +51,7 @@ for i in range(ui_truck_count):
 st.sidebar.divider()
 st.sidebar.header("4. Phases")
 pre_work_pct = st.sidebar.slider("Pre-Work % ", 0.0, 0.5, 0.10)
-post_work_pct = st.sidebar.slider("Post-Work % ", 0.0, 0.5, 0.10)
+post_work_pct = st.sidebar.slider("Post-Work % ", 0.0, 0.5, 0.10, help="This work is distributed in the empty weeks BETWEEN trucks and AFTER the last truck.")
 
 st.sidebar.header("5. Milestones")
 fdg_week = st.sidebar.number_input("FDG Week", value=2532)
@@ -137,7 +137,7 @@ except IndexError:
     st.error("⚠️ Critical Date Error: Please ensure all dates follow YYWW format.")
     st.stop()
 
-# --- Volume Calculations ---
+# --- Volume Calculations (Infinite Truck / Relative Capacity Model) ---
 demand_pre = total_scope * pre_work_pct
 demand_post = total_scope * post_work_pct
 demand_trucks_total = total_scope - (demand_pre + demand_post)
@@ -207,7 +207,6 @@ for i in range(len(df)):
         if t['sum_curve'] > 0:
             new_work += (t['raw_curve'][i] / t['sum_curve']) * t['volume']
 
-    # The SEs can only work on the pool of work that HAS ALREADY been generated
     pool = new_work + backlog
     processed = min(pool, max_capacity)
     backlog = pool - processed
@@ -224,13 +223,9 @@ def get_metrics_at_week(wk):
     if wk in res_df['Week'].values:
         idx = res_df[res_df['Week'] == wk].index[0]
         completed = round(res_df.loc[idx, 'Cumulative_Sent'])
-        
-        # CORE FIX: Missed is now strictly defined as the active backlog of work 
-        # that was generated but failed to be processed by the SEs by this week.
-        missed = round(res_df.loc[idx, 'Backlog'])
-        
+        missed = max(0, total_scope - completed)
         return idx, completed, missed
-    return None, 0, 0
+    return None, 0, total_scope
 
 # =========================================================
 # 3. VISUALIZATION
@@ -281,15 +276,18 @@ for i, (m_name, m_wk) in enumerate(target_milestones):
         phase_sent = comp - prev_comp
         y_pos = max_y * y_positions[i]
         
+        # Calculate percentages safely to avoid division by zero
         safe_total = max(1, total_scope)
         sent_pct = (comp / safe_total) * 100
         miss_pct = (miss / safe_total) * 100
         
+        # 1. Draw the High-visibility Status Boxes
         if miss > 0.5:
-            bg_color = "#dc3545" 
+            bg_color = "#dc3545" # Crimson Red
         else:
-            bg_color = "#28a745" 
+            bg_color = "#28a745" # Success Green
             
+        # FIX: Added percentage calculations directly to the label text
         box_text = f" {m_name} Status \n Sent: {int(comp)} ({sent_pct:.1f}%) \n Missed: {int(miss)} ({miss_pct:.1f}%) "
         
         ax.annotate(box_text, xy=(idx, 0), xytext=(idx - max(2, len(res_df)*0.03), y_pos),
@@ -297,6 +295,7 @@ for i, (m_name, m_wk) in enumerate(target_milestones):
                     fontsize=12, fontweight='bold', color='white',
                     bbox=dict(boxstyle="round,pad=0.5", fc=bg_color, ec='none', alpha=0.95))
         
+        # 2. Draw the Horizontal Span Line (Dimension Line)
         if prev_idx < idx:
             ax.annotate('', xy=(prev_idx, span_y_level), xytext=(idx, span_y_level),
                         arrowprops=dict(arrowstyle='<->', color='#555555', lw=1.5))
