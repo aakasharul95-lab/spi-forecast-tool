@@ -137,24 +137,25 @@ except IndexError:
     st.error("⚠️ Critical Date Error: Please ensure all dates follow YYWW format.")
     st.stop()
 
-# --- Volume Calculations (Absolute Capacity Model) ---
+# --- Volume Calculations (Infinite Truck / Relative Capacity Model) ---
 demand_pre = total_scope * pre_work_pct
 demand_post = total_scope * post_work_pct
 demand_trucks_total = total_scope - (demand_pre + demand_post)
 
-max_project_weight = ui_truck_count * 100.0
+# In the Infinite Truck model, there is NEVER unassigned volume left behind
+unassigned_volume = 0
 
 total_effective_weight = 0
 for t in trucks:
     t['effective_weight'] = t['physical_size'] * t['weight']
     total_effective_weight += t['effective_weight']
 
-unassigned_volume = 0
-if total_effective_weight < max_project_weight:
-    unassigned_volume = demand_trucks_total * ((max_project_weight - total_effective_weight) / max_project_weight)
+# Calculate a relative denominator to distribute 100% of the load across whatever trucks exist
+safe_denominator = max(0.01, total_effective_weight)
 
 for t in trucks:
-    t['volume'] = demand_trucks_total * (t['effective_weight'] / max_project_weight)
+    # 100% of the assigned scope is forced onto the available trucks, regardless of their size
+    t['volume'] = demand_trucks_total * (t['effective_weight'] / safe_denominator)
 
 first_arrival_idx = min(t['arr_idx'] for t in trucks)
 
@@ -222,6 +223,7 @@ res_df = res_df.merge(df, left_on='Index', right_on='Index')
 # Track cumulative sent infoheaders
 res_df['Cumulative_Sent'] = res_df['Sent'].cumsum()
 
+# Helper function to grab metrics at specific milestone weeks
 def get_metrics_at_week(wk):
     if wk in res_df['Week'].values:
         idx = res_df[res_df['Week'] == wk].index[0]
@@ -241,7 +243,6 @@ ax.plot(res_df['Index'], res_df['Gen'], color='#333333', linestyle='--', linewid
 max_y = max(res_df['Gen'].max(), max_capacity)
 if max_y == 0: max_y = 10
 
-# FIX: Increased the graph ceiling significantly to make room for the dimension line at the very top
 ax.set_ylim(0, max_y * (1.3 + 0.05 * ui_truck_count))
 
 bbox = dict(boxstyle="round,pad=0.3", fc="white", ec="none", alpha=0.85)
@@ -271,8 +272,6 @@ target_milestones = [("RG", rg_week), ("SOP", sop_week), ("EG", eg_week)]
 
 prev_idx = start_idx
 prev_comp = 0 
-
-# FIX: Set the dimension line safely above the highest possible truck label
 span_y_level = max_y * (1.15 + 0.05 * ui_truck_count) 
 
 for i, (m_name, m_wk) in enumerate(target_milestones):
