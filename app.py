@@ -158,22 +158,21 @@ global_natural_curve = [0.0] * len(df)
 
 for t in trucks:
     span = t['dep_idx'] - t['arr_idx']
-    # Restored the centered peak for a natural, slower ramp-up
+    # Restored perfectly centered peak for natural bell curve
     center = (t['arr_idx'] + t['dep_idx']) / 2 
-    # Restored standard spread for a smooth bell shape
-    sigma = (span / 5) if span > 0 else 0.5 
+    # Spread mathematically configured for a smooth ramp
+    sigma = (span / 6) if span > 0 else 0.5 
     
     truck_curve = [0.0] * len(df)
     for i in range(len(df)):
-        if sigma > 0 and i >= t['arr_idx']: # Work starts generating at arrival
+        if sigma > 0 and i >= t['arr_idx']: # Curves only begin at arrival
             truck_curve[i] = norm.pdf(i, center, sigma)
             
-    # Normalize this truck's curve so its total area equals its assigned volume
+    # Normalize this truck's curve area to its required volume
     local_sum = sum(truck_curve)
     if local_sum > 0:
         truck_curve = [(val / local_sum) * t['volume'] for val in truck_curve]
         
-    # Merge into the overall project curve
     for i in range(len(df)):
         global_natural_curve[i] += truck_curve[i]
 
@@ -183,7 +182,6 @@ backlog = 0
 pre_pool = demand_pre
 post_pool = demand_post
 active_truck_pool = 0.0
-truck_processed_global = 0.0 
 
 for i in range(len(df)):
     new_work = 0
@@ -212,31 +210,35 @@ for i in range(len(df)):
             new_work += alloc
             post_pool -= alloc
             
-    # C. TRUCK PHASE (The Area-Under-The-Curve Override)
+    # C. TRUCK PHASE (The "Point-Of-No-Return" Check)
     elif i >= first_arrival_idx:
         if active_truck_pool > 0:
             natural_pull = global_natural_curve[i]
-            global_truck_work_remaining = demand_trucks_total - truck_processed_global
             
-            if i <= rg_idx:
-                # Calculate how much work the natural curve *plans* to do before RG
-                natural_area_to_rg = sum(global_natural_curve[j] for j in range(i, rg_idx + 1))
+            weeks_left_to_rg = rg_idx - i
+            
+            if weeks_left_to_rg > 0:
+                # If we go at absolute maximum speed starting right now, how much can we clear by RG?
+                max_possible_catchup = weeks_left_to_rg * max_capacity
                 
-                # If the natural plan leaves us short of finishing before the deadline,
-                # we MUST abandon the bell curve and lock at max capacity to catch up.
-                if natural_area_to_rg < global_truck_work_remaining - 0.1:
+                # Look at the pile of work currently sitting in front of the team
+                total_work_burden = active_truck_pool + backlog
+                
+                # If the pile is so big we have no buffer time left, panic and lock to max capacity!
+                if total_work_burden > max_possible_catchup - 0.01:
                     desired_work = max_capacity
                 else:
+                    # We have a safe buffer. Relax and follow the slow bell curve.
                     desired_work = natural_pull
             else:
-                desired_work = natural_pull
+                # Past RG Deadline. Push to finish asap.
+                desired_work = max_capacity
                 
             desired_work = min(max_capacity, desired_work)
             actual_gen = min(desired_work, active_truck_pool)
             
             new_work += actual_gen
             active_truck_pool -= actual_gen
-            truck_processed_global += actual_gen
 
     # D. PROCESS OUTPUT
     pool = new_work + backlog
