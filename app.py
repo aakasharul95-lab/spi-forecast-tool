@@ -89,8 +89,9 @@ else:
 
 end_year_diff = (latest_date // 100) - (start_week // 100)
 end_week_diff = (latest_date % 100) - (start_week % 100)
-total_duration = (end_year_diff * 52) + end_week_diff + 12
-weeks_to_show = max(60, total_duration)
+# Padded by 30 weeks to ensure long tails fit on screen
+total_duration = (end_year_diff * 52) + end_week_diff + 30 
+weeks_to_show = max(80, total_duration)
 
 def generate_yyww_timeline(start, duration):
     timeline = []
@@ -129,13 +130,6 @@ try:
             alt = (t['departure'] // 100 + 1) * 100 + 1
             t['dep_idx'] = df[df['Week'] == alt].index[0] if alt in df['Week'].values else len(df)-1
             
-        span = t['dep_idx'] - t['arr_idx']
-        
-        # FIX: Shift the peak to 15% of the window to force a faster ramp-up
-        t['center'] = t['arr_idx'] + (span * 0.15) 
-        # FIX: Tighten the spread of the curve to make it steeper
-        t['sigma'] = span / 10 if span > 0 else 0.5
-        
 except IndexError:
     st.error("⚠️ Critical Date Error: Please ensure all dates follow YYWW format.")
     st.stop()
@@ -159,71 +153,69 @@ for t in trucks:
 
 first_arrival_idx = min(t['arr_idx'] for t in trucks)
 
-# --- SMART CURVE CALCULATION ---
-# 1. Create the base Gaussian shape
-raw_gauss_arr = [0] * len(df)
-for i in range(len(df)):
-    for t in trucks:
-        if t['sigma'] > 0:
-            raw_gauss_arr[i] += norm.pdf(i, t['center'], t['sigma']) * t['volume']
+# --- 1. GENERATE THE IDEAL GAUSSIAN SHAPES ---
+raw_gauss_arr = [0.0] * len(df)
 
-# 2. Scale it so the peak perfectly touches Max Capacity. 
-# This means increasing SE count natively increases the height of the curve.
-max_raw = max(raw_gauss_arr) if max(raw_gauss_arr) > 0 else 1
-scaled_gauss = [(r / max_raw) * max_capacity for r in raw_gauss_arr]
+for t in trucks:
+    span = t['dep_idx'] - t['arr_idx']
+    # Fast ramp-up: peak at 15% of the window
+    center = t['arr_idx'] + (span * 0.15) 
+    # Tight spread for aggressive generation
+    sigma = (span / 8) if span > 0 else 0.5 
+    
+    for i in range(len(df)):
+        if sigma > 0:
+            raw_gauss_arr[i] += norm.pdf(i, center, sigma) * t['volume']
 
-# --- SIMULATION LOOP ---
+# Normalize the aggregate curve so the area matches exactly the total truck volume
+total_raw = sum(raw_gauss_arr)
+if total_raw > 0:
+    raw_gauss_arr = [(val / total_raw) * demand_trucks_total for val in raw_gauss_arr]
+
+# --- 2. SIMULATION LOOP (The Snowplow Method) ---
 data = []
 backlog = 0
 pre_pool = demand_pre
 post_pool = demand_post
-truck_pool = demand_trucks_total
+pushed_truck_work = 0.0
 
 for i in range(len(df)):
     new_work = 0
-    
     is_gap = i >= first_arrival_idx and not any(t['arr_idx'] <= i <= t['dep_idx'] for t in trucks)
     
-    # 1. PRE-WORK (Fills at Max Capacity)
+    # Catch any pre_pool work if Work Start perfectly overlapped with T1 Arrival
+    if i == first_arrival_idx and pre_pool > 0:
+        pushed_truck_work += pre_pool
+        pre_pool = 0
+    
+    # A. PRE-WORK (Fills at exactly Max Capacity)
     if i >= start_idx and i < first_arrival_idx:
         if pre_pool > 0:
             alloc = min(max_capacity, pre_pool)
             new_work += alloc
             pre_pool -= alloc
             
-    # 2. POST-WORK (Fills at Max Capacity in Gaps)
+    # B. POST-WORK (Fills at exactly Max Capacity in Gaps)
     elif is_gap:
         if post_pool > 0:
             alloc = min(max_capacity, post_pool)
             new_work += alloc
             post_pool -= alloc
             
-    # 3. TRUCK PHASE (The Smart Pull System)
+    # C. TRUCK PHASE (The Snowplow)
     elif i >= first_arrival_idx:
-        if truck_pool > 0:
-            current_curve_val = scaled_gauss[i]
-            
-            is_falling = i > 0 and scaled_gauss[i] < scaled_gauss[i-1] - 0.001
-            
-            if is_falling:
-                # Ask: Do we have enough time to finish by RG if we let it drop?
-                tail_volume = sum(scaled_gauss[j] for j in range(i, rg_idx + 1))
-                
-                if tail_volume >= truck_pool:
-                    # Yes! Safe to lower the curve naturally.
-                    gen = current_curve_val
-                else:
-                    # NO! We will miss RG. Override the curve and lock at max capacity.
-                    gen = max_capacity
-            else:
-                # Curve is rising, follow it up
-                gen = current_curve_val
-                
-            alloc = min(gen, truck_pool)
-            new_work += alloc
-            truck_pool -= alloc
+        # The curve demands the raw gaussian work PLUS anything pushed from previous weeks
+        desired_work = raw_gauss_arr[i] + pushed_truck_work
+        
+        # The line caps perfectly at your Team's Max Capacity! 
+        actual_gen = min(desired_work, max_capacity)
+        
+        new_work += actual_gen
+        
+        # Any excess work is "snowplowed" into the next week
+        pushed_truck_work = desired_work - actual_gen
 
-    # Process Backlog
+    # D. PROCESS OUTPUT
     pool = new_work + backlog
     processed = min(pool, max_capacity)
     backlog = pool - processed
