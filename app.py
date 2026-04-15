@@ -142,19 +142,16 @@ demand_pre = total_scope * pre_work_pct
 demand_post = total_scope * post_work_pct
 demand_trucks_total = total_scope - (demand_pre + demand_post)
 
-# In the Infinite Truck model, there is NEVER unassigned volume left behind
 unassigned_volume = 0
-
 total_effective_weight = 0
+
 for t in trucks:
     t['effective_weight'] = t['physical_size'] * t['weight']
     total_effective_weight += t['effective_weight']
 
-# Calculate a relative denominator to distribute 100% of the load across whatever trucks exist
 safe_denominator = max(0.01, total_effective_weight)
 
 for t in trucks:
-    # 100% of the assigned scope is forced onto the available trucks, regardless of their size
     t['volume'] = demand_trucks_total * (t['effective_weight'] / safe_denominator)
 
 first_arrival_idx = min(t['arr_idx'] for t in trucks)
@@ -182,10 +179,10 @@ else:
 # --- Bell Curves ---
 for t in trucks:
     curve = []
-    cutoff_idx = min(rg_idx, t['dep_idx'])
     
+    # FIX: Removed the cutoff logic so the bell curve can complete naturally
     for i in range(len(df)):
-        if i <= cutoff_idx and t['sigma'] > 0:
+        if t['sigma'] > 0:
             val = norm.pdf(i, t['center'], t['sigma'])
         else:
             val = 0
@@ -223,7 +220,6 @@ res_df = res_df.merge(df, left_on='Index', right_on='Index')
 # Track cumulative sent infoheaders
 res_df['Cumulative_Sent'] = res_df['Sent'].cumsum()
 
-# Helper function to grab metrics at specific milestone weeks
 def get_metrics_at_week(wk):
     if wk in res_df['Week'].values:
         idx = res_df[res_df['Week'] == wk].index[0]
