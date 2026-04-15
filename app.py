@@ -180,7 +180,6 @@ else:
 for t in trucks:
     curve = []
     
-    # FIX: Removed the cutoff logic so the bell curve can complete naturally
     for i in range(len(df)):
         if t['sigma'] > 0:
             val = norm.pdf(i, t['center'], t['sigma'])
@@ -277,13 +276,20 @@ for i, (m_name, m_wk) in enumerate(target_milestones):
         phase_sent = comp - prev_comp
         y_pos = max_y * y_positions[i]
         
+        # Calculate percentages safely to avoid division by zero
+        safe_total = max(1, total_scope)
+        sent_pct = (comp / safe_total) * 100
+        miss_pct = (miss / safe_total) * 100
+        
         # 1. Draw the High-visibility Status Boxes
         if miss > 0.5:
             bg_color = "#dc3545" # Crimson Red
         else:
             bg_color = "#28a745" # Success Green
             
-        box_text = f" {m_name} Status \n Sent: {int(comp)} \n Missed: {int(miss)} "
+        # FIX: Added percentage calculations directly to the label text
+        box_text = f" {m_name} Status \n Sent: {int(comp)} ({sent_pct:.1f}%) \n Missed: {int(miss)} ({miss_pct:.1f}%) "
+        
         ax.annotate(box_text, xy=(idx, 0), xytext=(idx - max(2, len(res_df)*0.03), y_pos),
                     arrowprops=dict(facecolor=bg_color, edgecolor='none', shrink=0.05, width=2.5, headwidth=8),
                     fontsize=12, fontweight='bold', color='white',
