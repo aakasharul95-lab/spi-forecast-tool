@@ -137,7 +137,7 @@ except IndexError:
     st.error("⚠️ Critical Date Error: Please ensure all dates follow YYWW format.")
     st.stop()
 
-# --- Volume Calculations (Infinite Truck / Relative Capacity Model) ---
+# --- Volume Calculations ---
 demand_pre = total_scope * pre_work_pct
 demand_post = total_scope * post_work_pct
 demand_trucks_total = total_scope - (demand_pre + demand_post)
@@ -176,15 +176,30 @@ else:
     rate_post = 0
     unassigned_volume += demand_post
 
-# --- Bell Curves ---
+# --- Ramp-and-Hold Curves ---
+ramp_duration = 3 # Number of weeks to ramp up (adjust this as needed)
+
 for t in trucks:
     curve = []
     
     for i in range(len(df)):
-        if t['sigma'] > 0:
-            val = norm.pdf(i, t['center'], t['sigma'])
+        # 1. Before truck arrives: No work
+        if i < t['arr_idx']:
+            val = 0
+            
+        # 2. Ramp-up period: Gradually increase delivery
+        elif i < t['arr_idx'] + ramp_duration:
+            step = (i - t['arr_idx'] + 1)
+            val = step / ramp_duration
+            
+        # 3. Hold at Maximum: Keep delivering at peak rate
+        elif i <= t['dep_idx']:
+            val = 1.0
+            
+        # 4. After departure: Stop delivery
         else:
             val = 0
+            
         curve.append(val)
         
     t['raw_curve'] = curve
@@ -287,7 +302,6 @@ for i, (m_name, m_wk) in enumerate(target_milestones):
         else:
             bg_color = "#28a745" # Success Green
             
-        # FIX: Added percentage calculations directly to the label text
         box_text = f" {m_name} Status \n Sent: {int(comp)} ({sent_pct:.1f}%) \n Missed: {int(miss)} ({miss_pct:.1f}%) "
         
         ax.annotate(box_text, xy=(idx, 0), xytext=(idx - max(2, len(res_df)*0.03), y_pos),
