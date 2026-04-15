@@ -51,7 +51,7 @@ for i in range(ui_truck_count):
 st.sidebar.divider()
 st.sidebar.header("4. Phases")
 pre_work_pct = st.sidebar.slider("Pre-Work % ", 0.0, 0.5, 0.10)
-post_work_pct = st.sidebar.slider("Post-Work % ", 0.0, 0.5, 0.10)
+post_work_pct = st.sidebar.slider("Post-Work % ", 0.0, 0.5, 0.10, help="This work is distributed in the empty weeks BETWEEN trucks and AFTER the last truck.")
 
 st.sidebar.header("5. Milestones")
 fdg_week = st.sidebar.number_input("FDG Week", value=2532)
@@ -137,7 +137,7 @@ except IndexError:
     st.error("⚠️ Critical Date Error: Please ensure all dates follow YYWW format.")
     st.stop()
 
-# --- Volume Calculations ---
+# --- Volume Calculations (Infinite Truck / Relative Capacity Model) ---
 demand_pre = total_scope * pre_work_pct
 demand_post = total_scope * post_work_pct
 demand_trucks_total = total_scope - (demand_pre + demand_post)
@@ -180,6 +180,7 @@ else:
 for t in trucks:
     curve = []
     
+    # FIX: Removed the cutoff logic so the bell curve can complete naturally
     for i in range(len(df)):
         if t['sigma'] > 0:
             val = norm.pdf(i, t['center'], t['sigma'])
@@ -207,7 +208,6 @@ for i in range(len(df)):
         if t['sum_curve'] > 0:
             new_work += (t['raw_curve'][i] / t['sum_curve']) * t['volume']
 
-    # The SEs can only work on the pool of work that HAS ALREADY been generated
     pool = new_work + backlog
     processed = min(pool, max_capacity)
     backlog = pool - processed
@@ -224,10 +224,9 @@ def get_metrics_at_week(wk):
     if wk in res_df['Week'].values:
         idx = res_df[res_df['Week'] == wk].index[0]
         completed = round(res_df.loc[idx, 'Cumulative_Sent'])
-        # Missed is now strictly defined as the active backlog of generated work
-        missed = round(res_df.loc[idx, 'Backlog'])
+        missed = max(0, total_scope - completed)
         return idx, completed, missed
-    return None, 0, 0
+    return None, 0, total_scope
 
 # =========================================================
 # 3. VISUALIZATION
@@ -237,10 +236,8 @@ fig, ax = plt.subplots(figsize=(16, 7))
 ax.bar(res_df['Index'], res_df['Sent'], color='#005f9e', alpha=0.9, label='Team Output (Sent IH)')
 ax.plot(res_df['Index'], res_df['Gen'], color='#333333', linestyle='--', linewidth=3, label='Work Generated')
 
-# FIX: Added a minimum limit of 25 so small workloads don't squish the text boxes
 max_y = max(res_df['Gen'].max(), max_capacity)
-if max_y < 25:
-    max_y = 25
+if max_y == 0: max_y = 10
 
 ax.set_ylim(0, max_y * (1.3 + 0.05 * ui_truck_count))
 
@@ -266,8 +263,7 @@ for name, wk in project_milestones.items():
         ax.text(idx, max_y*0.85, f" {name} ", color=c, rotation=90, bbox=bbox)
 
 # --- DETAILED HIGH-VISIBILITY METRIC ANNOTATIONS AND SPAN LINES ---
-# FIX: Pushed the boxes much higher up the graph to keep them out of the curve
-y_positions = [0.80, 0.55, 0.30] 
+y_positions = [0.65, 0.45, 0.25] 
 target_milestones = [("RG", rg_week), ("SOP", sop_week), ("EG", eg_week)]
 
 prev_idx = start_idx
@@ -281,22 +277,19 @@ for i, (m_name, m_wk) in enumerate(target_milestones):
         phase_sent = comp - prev_comp
         y_pos = max_y * y_positions[i]
         
-        safe_total = max(1, total_scope)
-        sent_pct = (comp / safe_total) * 100
-        miss_pct = (miss / safe_total) * 100
-        
+        # 1. Draw the High-visibility Status Boxes
         if miss > 0.5:
-            bg_color = "#dc3545" 
+            bg_color = "#dc3545" # Crimson Red
         else:
-            bg_color = "#28a745" 
+            bg_color = "#28a745" # Success Green
             
-        box_text = f" {m_name} Status \n Sent: {int(comp)} ({sent_pct:.1f}%) \n Missed: {int(miss)} ({miss_pct:.1f}%) "
-        
+        box_text = f" {m_name} Status \n Sent: {int(comp)} \n Missed: {int(miss)} "
         ax.annotate(box_text, xy=(idx, 0), xytext=(idx - max(2, len(res_df)*0.03), y_pos),
                     arrowprops=dict(facecolor=bg_color, edgecolor='none', shrink=0.05, width=2.5, headwidth=8),
                     fontsize=12, fontweight='bold', color='white',
                     bbox=dict(boxstyle="round,pad=0.5", fc=bg_color, ec='none', alpha=0.95))
         
+        # 2. Draw the Horizontal Span Line (Dimension Line)
         if prev_idx < idx:
             ax.annotate('', xy=(prev_idx, span_y_level), xytext=(idx, span_y_level),
                         arrowprops=dict(arrowstyle='<->', color='#555555', lw=1.5))
