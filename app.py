@@ -89,7 +89,6 @@ else:
 
 end_year_diff = (latest_date // 100) - (start_week // 100)
 end_week_diff = (latest_date % 100) - (start_week % 100)
-# Padded by 30 weeks to ensure long tails fit on screen
 total_duration = (end_year_diff * 52) + end_week_diff + 30 
 weeks_to_show = max(80, total_duration)
 
@@ -152,41 +151,46 @@ for t in trucks:
     t['volume'] = demand_trucks_total * (t['effective_weight'] / safe_denominator)
 
 first_arrival_idx = min(t['arr_idx'] for t in trucks)
+truck_windows = [(t['arr_idx'], t['dep_idx']) for t in trucks]
 
-# --- 1. GENERATE THE IDEAL GAUSSIAN SHAPES ---
-raw_gauss_arr = [0.0] * len(df)
+# --- SMART THROTTLE MAP (Defines the shape of the generation) ---
+throttle_map = [0.0] * len(df)
 
 for t in trucks:
     span = t['dep_idx'] - t['arr_idx']
-    # Fast ramp-up: peak at 15% of the window
     center = t['arr_idx'] + (span * 0.15) 
-    # Tight spread for aggressive generation
     sigma = (span / 8) if span > 0 else 0.5 
     
     for i in range(len(df)):
         if sigma > 0:
-            raw_gauss_arr[i] += norm.pdf(i, center, sigma) * t['volume']
+            # Scale the gaussian hump by the truck's volume so heavy trucks pull harder
+            throttle_map[i] += norm.pdf(i, center, sigma) * t['volume']
 
-# Normalize the aggregate curve so the area matches exactly the total truck volume
-total_raw = sum(raw_gauss_arr)
-if total_raw > 0:
-    raw_gauss_arr = [(val / total_raw) * demand_trucks_total for val in raw_gauss_arr]
+# Normalize the throttle map so the absolute highest peak is exactly 1.0 (100% capacity)
+max_throttle = max(throttle_map) if max(throttle_map) > 0 else 1.0
+throttle_map = [val / max_throttle for val in throttle_map]
 
-# --- 2. SIMULATION LOOP (The Snowplow Method) ---
+# --- SIMULATION LOOP (Capacity-Driven Pull System) ---
 data = []
 backlog = 0
 pre_pool = demand_pre
 post_pool = demand_post
-pushed_truck_work = 0.0
+active_truck_pool = 0.0
 
 for i in range(len(df)):
     new_work = 0
-    is_gap = i >= first_arrival_idx and not any(t['arr_idx'] <= i <= t['dep_idx'] for t in trucks)
     
-    # Catch any pre_pool work if Work Start perfectly overlapped with T1 Arrival
+    # 1. Add arriving truck volume to the active pool ON THE EXACT WEEK it arrives
+    for t in trucks:
+        if i == t['arr_idx']:
+            active_truck_pool += t['volume']
+            
+    # Catch any unfinished pre-work when the first truck hits
     if i == first_arrival_idx and pre_pool > 0:
-        pushed_truck_work += pre_pool
+        active_truck_pool += pre_pool
         pre_pool = 0
+        
+    is_gap = i >= first_arrival_idx and not any(start <= i <= end for start, end in truck_windows)
     
     # A. PRE-WORK (Fills at exactly Max Capacity)
     if i >= start_idx and i < first_arrival_idx:
@@ -202,18 +206,23 @@ for i in range(len(df)):
             new_work += alloc
             post_pool -= alloc
             
-    # C. TRUCK PHASE (The Snowplow)
+    # C. TRUCK PHASE (The Dynamic Pull System)
     elif i >= first_arrival_idx:
-        # The curve demands the raw gaussian work PLUS anything pushed from previous weeks
-        desired_work = raw_gauss_arr[i] + pushed_truck_work
-        
-        # The line caps perfectly at your Team's Max Capacity! 
-        actual_gen = min(desired_work, max_capacity)
-        
-        new_work += actual_gen
-        
-        # Any excess work is "snowplowed" into the next week
-        pushed_truck_work = desired_work - actual_gen
+        if active_truck_pool > 0:
+            # The curve height scales directly with SE Count (max_capacity)
+            natural_pull = max_capacity * throttle_map[i]
+            
+            # Panic pull ensures we never miss the RG Deadline
+            weeks_left = max(1, rg_idx - i)
+            panic_pull = active_truck_pool / weeks_left
+            
+            # Use the Gaussian shape, unless we are behind schedule, then stay at max_capacity
+            desired_work = min(max_capacity, max(natural_pull, panic_pull))
+            
+            # Actually pull the work from the pool
+            actual_gen = min(desired_work, active_truck_pool)
+            new_work += actual_gen
+            active_truck_pool -= actual_gen
 
     # D. PROCESS OUTPUT
     pool = new_work + backlog
