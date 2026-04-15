@@ -163,10 +163,8 @@ for t in trucks:
     
     for i in range(len(df)):
         if sigma > 0:
-            # Scale the gaussian hump by the truck's volume so heavy trucks pull harder
             throttle_map[i] += norm.pdf(i, center, sigma) * t['volume']
 
-# Normalize the throttle map so the absolute highest peak is exactly 1.0 (100% capacity)
 max_throttle = max(throttle_map) if max(throttle_map) > 0 else 1.0
 throttle_map = [val / max_throttle for val in throttle_map]
 
@@ -176,16 +174,15 @@ backlog = 0
 pre_pool = demand_pre
 post_pool = demand_post
 active_truck_pool = 0.0
+truck_processed_global = 0.0 # NEW: Tracks total truck work done across the whole timeline
 
 for i in range(len(df)):
     new_work = 0
     
-    # 1. Add arriving truck volume to the active pool ON THE EXACT WEEK it arrives
     for t in trucks:
         if i == t['arr_idx']:
             active_truck_pool += t['volume']
             
-    # Catch any unfinished pre-work when the first truck hits
     if i == first_arrival_idx and pre_pool > 0:
         active_truck_pool += pre_pool
         pre_pool = 0
@@ -206,23 +203,28 @@ for i in range(len(df)):
             new_work += alloc
             post_pool -= alloc
             
-    # C. TRUCK PHASE (The Dynamic Pull System)
+    # C. TRUCK PHASE (The Global Radar Override)
     elif i >= first_arrival_idx:
         if active_truck_pool > 0:
-            # The curve height scales directly with SE Count (max_capacity)
             natural_pull = max_capacity * throttle_map[i]
             
-            # Panic pull ensures we never miss the RG Deadline
-            weeks_left = max(1, rg_idx - i)
-            panic_pull = active_truck_pool / weeks_left
+            # THE FIX: Look at the ENTIRE remaining project scope, not just the active pool
+            global_truck_work_remaining = demand_trucks_total - truck_processed_global
+            weeks_left_to_rg = max(1, rg_idx - i)
             
-            # Use the Gaussian shape, unless we are behind schedule, then stay at max_capacity
-            desired_work = min(max_capacity, max(natural_pull, panic_pull))
+            # How fast must we go to finish everything by RG?
+            required_speed = global_truck_work_remaining / weeks_left_to_rg
             
-            # Actually pull the work from the pool
+            # If the required speed puts us in the danger zone, lock the curve at Max Capacity
+            if required_speed >= max_capacity * 0.95:
+                desired_work = max_capacity
+            else:
+                desired_work = min(max_capacity, max(natural_pull, required_speed))
+            
             actual_gen = min(desired_work, active_truck_pool)
             new_work += actual_gen
             active_truck_pool -= actual_gen
+            truck_processed_global += actual_gen
 
     # D. PROCESS OUTPUT
     pool = new_work + backlog
