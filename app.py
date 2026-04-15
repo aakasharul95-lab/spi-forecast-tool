@@ -271,7 +271,8 @@ target_milestones = [("RG", rg_week), ("SOP", sop_week), ("EG", eg_week)]
 
 prev_idx = start_idx
 prev_comp = 0 
-span_y_level = max_y * 0.76  # The horizontal height for the dimension lines
+# FIX: Moved the horizontal span line high above the peaks so it doesn't overlap the boxes
+span_y_level = max_y * 1.05 
 
 for i, (m_name, m_wk) in enumerate(target_milestones):
     idx, comp, miss = get_metrics_at_week(m_wk)
