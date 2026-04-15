@@ -153,29 +153,31 @@ for t in trucks:
 first_arrival_idx = min(t['arr_idx'] for t in trucks)
 truck_windows = [(t['arr_idx'], t['dep_idx']) for t in trucks]
 
-# --- SMART THROTTLE MAP (PER-TRUCK NORMALIZATION) ---
-throttle_map = [0.0] * len(df)
+# --- 1. GENERATE THE NATURAL GAUSSIAN SHAPES ---
+global_natural_curve = [0.0] * len(df)
 
 for t in trucks:
-    truck_curve = [0.0] * len(df)
     span = t['dep_idx'] - t['arr_idx']
-    center = t['arr_idx'] + (span * 0.15) 
-    sigma = (span / 8) if span > 0 else 0.5 
+    # Restored the centered peak for a natural, slower ramp-up
+    center = (t['arr_idx'] + t['dep_idx']) / 2 
+    # Restored standard spread for a smooth bell shape
+    sigma = (span / 5) if span > 0 else 0.5 
     
-    # Generate the base curve for this specific truck
+    truck_curve = [0.0] * len(df)
     for i in range(len(df)):
-        if sigma > 0:
+        if sigma > 0 and i >= t['arr_idx']: # Work starts generating at arrival
             truck_curve[i] = norm.pdf(i, center, sigma)
             
-    # Normalize THIS truck's curve so its peak is exactly 1.0 (100% capacity)
-    local_max = max(truck_curve) if max(truck_curve) > 0 else 1.0
-    truck_curve = [val / local_max for val in truck_curve]
-    
-    # Merge into the global throttle map by always taking the highest active value
+    # Normalize this truck's curve so its total area equals its assigned volume
+    local_sum = sum(truck_curve)
+    if local_sum > 0:
+        truck_curve = [(val / local_sum) * t['volume'] for val in truck_curve]
+        
+    # Merge into the overall project curve
     for i in range(len(df)):
-        throttle_map[i] = max(throttle_map[i], truck_curve[i])
+        global_natural_curve[i] += truck_curve[i]
 
-# --- SIMULATION LOOP (Capacity-Driven Pull System) ---
+# --- SIMULATION LOOP ---
 data = []
 backlog = 0
 pre_pool = demand_pre
@@ -196,36 +198,42 @@ for i in range(len(df)):
         
     is_gap = i >= first_arrival_idx and not any(start <= i <= end for start, end in truck_windows)
     
-    # A. PRE-WORK (Fills at exactly Max Capacity)
+    # A. PRE-WORK
     if i >= start_idx and i < first_arrival_idx:
         if pre_pool > 0:
             alloc = min(max_capacity, pre_pool)
             new_work += alloc
             pre_pool -= alloc
             
-    # B. POST-WORK (Fills at exactly Max Capacity in Gaps)
+    # B. POST-WORK
     elif is_gap:
         if post_pool > 0:
             alloc = min(max_capacity, post_pool)
             new_work += alloc
             post_pool -= alloc
             
-    # C. TRUCK PHASE (The Global Radar Override)
+    # C. TRUCK PHASE (The Area-Under-The-Curve Override)
     elif i >= first_arrival_idx:
         if active_truck_pool > 0:
-            natural_pull = max_capacity * throttle_map[i]
-            
+            natural_pull = global_natural_curve[i]
             global_truck_work_remaining = demand_trucks_total - truck_processed_global
-            weeks_left_to_rg = max(1, rg_idx - i)
             
-            required_speed = global_truck_work_remaining / weeks_left_to_rg
-            
-            if required_speed >= max_capacity * 0.95:
-                desired_work = max_capacity
+            if i <= rg_idx:
+                # Calculate how much work the natural curve *plans* to do before RG
+                natural_area_to_rg = sum(global_natural_curve[j] for j in range(i, rg_idx + 1))
+                
+                # If the natural plan leaves us short of finishing before the deadline,
+                # we MUST abandon the bell curve and lock at max capacity to catch up.
+                if natural_area_to_rg < global_truck_work_remaining - 0.1:
+                    desired_work = max_capacity
+                else:
+                    desired_work = natural_pull
             else:
-                desired_work = min(max_capacity, max(natural_pull, required_speed))
-            
+                desired_work = natural_pull
+                
+            desired_work = min(max_capacity, desired_work)
             actual_gen = min(desired_work, active_truck_pool)
+            
             new_work += actual_gen
             active_truck_pool -= actual_gen
             truck_processed_global += actual_gen
