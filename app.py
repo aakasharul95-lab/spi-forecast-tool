@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
-from scipy.stats import norm
 import time
 import math
 
@@ -131,7 +130,6 @@ try:
             
         t['center'] = (t['arr_idx'] + t['dep_idx']) / 2
         span = t['dep_idx'] - t['arr_idx']
-        t['sigma'] = span / 5 if span > 0 else 0.5
         
 except IndexError:
     st.error("⚠️ Critical Date Error: Please ensure all dates follow YYWW format.")
@@ -176,36 +174,7 @@ else:
     rate_post = 0
     unassigned_volume += demand_post
 
-# --- Ramp-and-Hold Curves ---
-ramp_duration = 3 # Number of weeks to ramp up (adjust this as needed)
-
-for t in trucks:
-    curve = []
-    
-    for i in range(len(df)):
-        # 1. Before truck arrives: No work
-        if i < t['arr_idx']:
-            val = 0
-            
-        # 2. Ramp-up period: Gradually increase delivery
-        elif i < t['arr_idx'] + ramp_duration:
-            step = (i - t['arr_idx'] + 1)
-            val = step / ramp_duration
-            
-        # 3. Hold at Maximum: Keep delivering at peak rate
-        elif i <= t['dep_idx']:
-            val = 1.0
-            
-        # 4. After departure: Stop delivery
-        else:
-            val = 0
-            
-        curve.append(val)
-        
-    t['raw_curve'] = curve
-    t['sum_curve'] = sum(curve)
-
-# --- Simulation Loop ---
+# --- Simulation Loop (Instant Dump / Max Capacity Burndown) ---
 data = []
 backlog = 0
 
@@ -219,8 +188,8 @@ for i in range(len(df)):
         new_work += rate_post
         
     for t in trucks:
-        if t['sum_curve'] > 0:
-            new_work += (t['raw_curve'][i] / t['sum_curve']) * t['volume']
+        if i == t['arr_idx']:
+            new_work += t['volume']
 
     pool = new_work + backlog
     processed = min(pool, max_capacity)
@@ -253,7 +222,8 @@ ax.plot(res_df['Index'], res_df['Gen'], color='#333333', linestyle='--', linewid
 max_y = max(res_df['Gen'].max(), max_capacity)
 if max_y == 0: max_y = 10
 
-ax.set_ylim(0, max_y * (1.3 + 0.05 * ui_truck_count))
+# Adjust y-limit to account for the massive single-week spikes
+ax.set_ylim(0, max(max_capacity * 1.5, max_y * 1.1))
 
 bbox = dict(boxstyle="round,pad=0.3", fc="white", ec="none", alpha=0.85)
 
@@ -261,12 +231,13 @@ colors_truck = ['green', 'blue', 'teal', 'magenta', 'darkorange', 'purple', 'cya
 for t in trucks:
     c = colors_truck[(t['id']-1) % len(colors_truck)]
     ax.axvline(t['arr_idx'], color=c, linestyle=':')
-    ax.text(t['arr_idx'], max_y*(1.0 + 0.05*t['id']), f"T{t['id']} Arr", color=c, ha='center', fontweight='bold', bbox=bbox)
+    # Lowered the text slightly so it doesn't overlap the huge spikes as much
+    ax.text(t['arr_idx'], max_capacity*(1.1 + 0.05*t['id']), f"T{t['id']} Arr", color=c, ha='center', fontweight='bold', bbox=bbox)
     ax.axvline(t['dep_idx'], color='orange', linestyle=':')
-    ax.text(t['dep_idx'], max_y*(1.0 + 0.05*t['id']), f"T{t['id']} Dep", color='orange', ha='center', fontweight='bold', bbox=bbox)
+    ax.text(t['dep_idx'], max_capacity*(1.1 + 0.05*t['id']), f"T{t['id']} Dep", color='orange', ha='center', fontweight='bold', bbox=bbox)
 
 ax.axvline(start_idx, color='blue', linestyle='-.')
-ax.text(start_idx, max_y*1.0, "Work Start", color='blue', ha='center', bbox=bbox)
+ax.text(start_idx, max_capacity*1.0, "Work Start", color='blue', ha='center', bbox=bbox)
 
 gate_colors = {"FDG": "purple", "C-Build": "#d4af37", "FIG": "brown", "RG": "black", "SOP": "darkblue", "EG": "darkgreen"}
 for name, wk in project_milestones.items():
@@ -274,7 +245,7 @@ for name, wk in project_milestones.items():
         idx = res_df[res_df['Week'] == wk].index[0]
         c = gate_colors.get(name, 'black')
         ax.axvline(idx, color=c, linestyle='-.')
-        ax.text(idx, max_y*0.85, f" {name} ", color=c, rotation=90, bbox=bbox)
+        ax.text(idx, max_capacity*0.85, f" {name} ", color=c, rotation=90, bbox=bbox)
 
 # --- DETAILED HIGH-VISIBILITY METRIC ANNOTATIONS AND SPAN LINES ---
 y_positions = [0.65, 0.45, 0.25] 
@@ -282,25 +253,23 @@ target_milestones = [("RG", rg_week), ("SOP", sop_week), ("EG", eg_week)]
 
 prev_idx = start_idx
 prev_comp = 0 
-span_y_level = max_y * (1.15 + 0.05 * ui_truck_count) 
+span_y_level = max_capacity * (1.3 + 0.05 * ui_truck_count) 
 
 for i, (m_name, m_wk) in enumerate(target_milestones):
     idx, comp, miss = get_metrics_at_week(m_wk)
     
     if idx is not None:
         phase_sent = comp - prev_comp
-        y_pos = max_y * y_positions[i]
+        y_pos = max_capacity * y_positions[i]
         
-        # Calculate percentages safely to avoid division by zero
         safe_total = max(1, total_scope)
         sent_pct = (comp / safe_total) * 100
         miss_pct = (miss / safe_total) * 100
         
-        # 1. Draw the High-visibility Status Boxes
         if miss > 0.5:
-            bg_color = "#dc3545" # Crimson Red
+            bg_color = "#dc3545" 
         else:
-            bg_color = "#28a745" # Success Green
+            bg_color = "#28a745" 
             
         box_text = f" {m_name} Status \n Sent: {int(comp)} ({sent_pct:.1f}%) \n Missed: {int(miss)} ({miss_pct:.1f}%) "
         
@@ -309,13 +278,12 @@ for i, (m_name, m_wk) in enumerate(target_milestones):
                     fontsize=12, fontweight='bold', color='white',
                     bbox=dict(boxstyle="round,pad=0.5", fc=bg_color, ec='none', alpha=0.95))
         
-        # 2. Draw the Horizontal Span Line (Dimension Line)
         if prev_idx < idx:
             ax.annotate('', xy=(prev_idx, span_y_level), xytext=(idx, span_y_level),
                         arrowprops=dict(arrowstyle='<->', color='#555555', lw=1.5))
             
             mid_x = (prev_idx + idx) / 2
-            ax.text(mid_x, span_y_level + (max_y*0.015), f"{int(phase_sent)} IH", 
+            ax.text(mid_x, span_y_level + (max_capacity*0.015), f"{int(phase_sent)} IH", 
                     ha='center', va='bottom', fontsize=10, fontweight='bold', color='#333333',
                     bbox=dict(boxstyle="round,pad=0.2", fc="#fdfdfd", ec="#cccccc", alpha=0.95))
         
