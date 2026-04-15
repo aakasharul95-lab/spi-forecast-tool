@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
+from scipy.stats import norm
 import time
 import math
 
@@ -130,6 +131,7 @@ try:
             
         t['center'] = (t['arr_idx'] + t['dep_idx']) / 2
         span = t['dep_idx'] - t['arr_idx']
+        t['sigma'] = span / 5 if span > 0 else 0.5
         
 except IndexError:
     st.error("⚠️ Critical Date Error: Please ensure all dates follow YYWW format.")
@@ -154,42 +156,61 @@ for t in trucks:
 
 first_arrival_idx = min(t['arr_idx'] for t in trucks)
 
-# --- Rates ---
-dur_pre = first_arrival_idx - start_idx
-if dur_pre > 0:
-    rate_pre = demand_pre / dur_pre
-else:
-    rate_pre = 0
-    unassigned_volume += demand_pre
-
 truck_windows = [(t['arr_idx'], t['dep_idx']) for t in trucks]
 gap_indices = [
     i for i in range(first_arrival_idx + 1, rg_idx + 1)
     if not any(start <= i <= end for start, end in truck_windows)
 ]
 
-if len(gap_indices) > 0:
-    rate_post = demand_post / len(gap_indices)
-else:
-    rate_post = 0
-    unassigned_volume += demand_post
+# --- Gaussian Bell Curves for Trucks ---
+for t in trucks:
+    curve = []
+    for i in range(len(df)):
+        if t['sigma'] > 0:
+            val = norm.pdf(i, t['center'], t['sigma'])
+        else:
+            val = 0
+        curve.append(val)
+        
+    t['raw_curve'] = curve
+    t['sum_curve'] = sum(curve)
 
-# --- Simulation Loop (Instant Dump / Max Capacity Burndown) ---
+# --- Simulation Loop (Hybrid Dynamic Model) ---
 data = []
 backlog = 0
+pre_remaining = demand_pre
+post_remaining = demand_post
 
 for i in range(len(df)):
     new_work = 0
     
+    # 1. Pre-Work (Fills exactly to Max Capacity)
     if i >= start_idx and i < first_arrival_idx:
-        new_work += rate_pre
+        if pre_remaining > 0:
+            allocation = min(max_capacity, pre_remaining)
+            new_work += allocation
+            pre_remaining -= allocation
+            
+    # Dump any straggling pre-work into backlog when the truck hits
+    if i == first_arrival_idx and pre_remaining > 0:
+        new_work += pre_remaining
+        pre_remaining = 0
         
+    # 2. Post-Work (Fills exactly to Max Capacity in gaps)
     if i in gap_indices:
-        new_work += rate_post
+        if post_remaining > 0:
+            allocation = min(max_capacity, post_remaining)
+            new_work += allocation
+            post_remaining -= allocation
+            
+    if len(gap_indices) > 0 and i == gap_indices[-1] and post_remaining > 0:
+        new_work += post_remaining
+        post_remaining = 0
         
+    # 3. Trucks (Follows Gaussian Curve)
     for t in trucks:
-        if i == t['arr_idx']:
-            new_work += t['volume']
+        if t['sum_curve'] > 0:
+            new_work += (t['raw_curve'][i] / t['sum_curve']) * t['volume']
 
     pool = new_work + backlog
     processed = min(pool, max_capacity)
@@ -222,8 +243,7 @@ ax.plot(res_df['Index'], res_df['Gen'], color='#333333', linestyle='--', linewid
 max_y = max(res_df['Gen'].max(), max_capacity)
 if max_y == 0: max_y = 10
 
-# Adjust y-limit to account for the massive single-week spikes
-ax.set_ylim(0, max(max_capacity * 1.5, max_y * 1.1))
+ax.set_ylim(0, max_y * (1.3 + 0.05 * ui_truck_count))
 
 bbox = dict(boxstyle="round,pad=0.3", fc="white", ec="none", alpha=0.85)
 
@@ -231,13 +251,12 @@ colors_truck = ['green', 'blue', 'teal', 'magenta', 'darkorange', 'purple', 'cya
 for t in trucks:
     c = colors_truck[(t['id']-1) % len(colors_truck)]
     ax.axvline(t['arr_idx'], color=c, linestyle=':')
-    # Lowered the text slightly so it doesn't overlap the huge spikes as much
-    ax.text(t['arr_idx'], max_capacity*(1.1 + 0.05*t['id']), f"T{t['id']} Arr", color=c, ha='center', fontweight='bold', bbox=bbox)
+    ax.text(t['arr_idx'], max_y*(1.0 + 0.05*t['id']), f"T{t['id']} Arr", color=c, ha='center', fontweight='bold', bbox=bbox)
     ax.axvline(t['dep_idx'], color='orange', linestyle=':')
-    ax.text(t['dep_idx'], max_capacity*(1.1 + 0.05*t['id']), f"T{t['id']} Dep", color='orange', ha='center', fontweight='bold', bbox=bbox)
+    ax.text(t['dep_idx'], max_y*(1.0 + 0.05*t['id']), f"T{t['id']} Dep", color='orange', ha='center', fontweight='bold', bbox=bbox)
 
 ax.axvline(start_idx, color='blue', linestyle='-.')
-ax.text(start_idx, max_capacity*1.0, "Work Start", color='blue', ha='center', bbox=bbox)
+ax.text(start_idx, max_y*1.0, "Work Start", color='blue', ha='center', bbox=bbox)
 
 gate_colors = {"FDG": "purple", "C-Build": "#d4af37", "FIG": "brown", "RG": "black", "SOP": "darkblue", "EG": "darkgreen"}
 for name, wk in project_milestones.items():
@@ -245,7 +264,7 @@ for name, wk in project_milestones.items():
         idx = res_df[res_df['Week'] == wk].index[0]
         c = gate_colors.get(name, 'black')
         ax.axvline(idx, color=c, linestyle='-.')
-        ax.text(idx, max_capacity*0.85, f" {name} ", color=c, rotation=90, bbox=bbox)
+        ax.text(idx, max_y*0.85, f" {name} ", color=c, rotation=90, bbox=bbox)
 
 # --- DETAILED HIGH-VISIBILITY METRIC ANNOTATIONS AND SPAN LINES ---
 y_positions = [0.65, 0.45, 0.25] 
@@ -253,14 +272,14 @@ target_milestones = [("RG", rg_week), ("SOP", sop_week), ("EG", eg_week)]
 
 prev_idx = start_idx
 prev_comp = 0 
-span_y_level = max_capacity * (1.3 + 0.05 * ui_truck_count) 
+span_y_level = max_y * (1.15 + 0.05 * ui_truck_count) 
 
 for i, (m_name, m_wk) in enumerate(target_milestones):
     idx, comp, miss = get_metrics_at_week(m_wk)
     
     if idx is not None:
         phase_sent = comp - prev_comp
-        y_pos = max_capacity * y_positions[i]
+        y_pos = max_y * y_positions[i]
         
         safe_total = max(1, total_scope)
         sent_pct = (comp / safe_total) * 100
@@ -283,7 +302,7 @@ for i, (m_name, m_wk) in enumerate(target_milestones):
                         arrowprops=dict(arrowstyle='<->', color='#555555', lw=1.5))
             
             mid_x = (prev_idx + idx) / 2
-            ax.text(mid_x, span_y_level + (max_capacity*0.015), f"{int(phase_sent)} IH", 
+            ax.text(mid_x, span_y_level + (max_y*0.015), f"{int(phase_sent)} IH", 
                     ha='center', va='bottom', fontsize=10, fontweight='bold', color='#333333',
                     bbox=dict(boxstyle="round,pad=0.2", fc="#fdfdfd", ec="#cccccc", alpha=0.95))
         
