@@ -129,9 +129,12 @@ try:
             alt = (t['departure'] // 100 + 1) * 100 + 1
             t['dep_idx'] = df[df['Week'] == alt].index[0] if alt in df['Week'].values else len(df)-1
             
-        t['center'] = (t['arr_idx'] + t['dep_idx']) / 2
         span = t['dep_idx'] - t['arr_idx']
-        t['sigma'] = span / 5 if span > 0 else 0.5
+        
+        # FIX: Shift the peak to 15% of the window to force a faster ramp-up
+        t['center'] = t['arr_idx'] + (span * 0.15) 
+        # FIX: Tighten the spread of the curve to make it steeper
+        t['sigma'] = span / 10 if span > 0 else 0.5
         
 except IndexError:
     st.error("⚠️ Critical Date Error: Please ensure all dates follow YYWW format.")
@@ -156,62 +159,71 @@ for t in trucks:
 
 first_arrival_idx = min(t['arr_idx'] for t in trucks)
 
-truck_windows = [(t['arr_idx'], t['dep_idx']) for t in trucks]
-gap_indices = [
-    i for i in range(first_arrival_idx + 1, rg_idx + 1)
-    if not any(start <= i <= end for start, end in truck_windows)
-]
-
-# --- Gaussian Bell Curves for Trucks ---
-for t in trucks:
-    curve = []
-    for i in range(len(df)):
+# --- SMART CURVE CALCULATION ---
+# 1. Create the base Gaussian shape
+raw_gauss_arr = [0] * len(df)
+for i in range(len(df)):
+    for t in trucks:
         if t['sigma'] > 0:
-            val = norm.pdf(i, t['center'], t['sigma'])
-        else:
-            val = 0
-        curve.append(val)
-        
-    t['raw_curve'] = curve
-    t['sum_curve'] = sum(curve)
+            raw_gauss_arr[i] += norm.pdf(i, t['center'], t['sigma']) * t['volume']
 
-# --- Simulation Loop (Hybrid Dynamic Model) ---
+# 2. Scale it so the peak perfectly touches Max Capacity. 
+# This means increasing SE count natively increases the height of the curve.
+max_raw = max(raw_gauss_arr) if max(raw_gauss_arr) > 0 else 1
+scaled_gauss = [(r / max_raw) * max_capacity for r in raw_gauss_arr]
+
+# --- SIMULATION LOOP ---
 data = []
 backlog = 0
-pre_remaining = demand_pre
-post_remaining = demand_post
+pre_pool = demand_pre
+post_pool = demand_post
+truck_pool = demand_trucks_total
 
 for i in range(len(df)):
     new_work = 0
     
-    # 1. Pre-Work (Fills exactly to Max Capacity)
+    is_gap = i >= first_arrival_idx and not any(t['arr_idx'] <= i <= t['dep_idx'] for t in trucks)
+    
+    # 1. PRE-WORK (Fills at Max Capacity)
     if i >= start_idx and i < first_arrival_idx:
-        if pre_remaining > 0:
-            allocation = min(max_capacity, pre_remaining)
-            new_work += allocation
-            pre_remaining -= allocation
+        if pre_pool > 0:
+            alloc = min(max_capacity, pre_pool)
+            new_work += alloc
+            pre_pool -= alloc
             
-    # Dump any straggling pre-work into backlog when the truck hits
-    if i == first_arrival_idx and pre_remaining > 0:
-        new_work += pre_remaining
-        pre_remaining = 0
-        
-    # 2. Post-Work (Fills exactly to Max Capacity in gaps)
-    if i in gap_indices:
-        if post_remaining > 0:
-            allocation = min(max_capacity, post_remaining)
-            new_work += allocation
-            post_remaining -= allocation
+    # 2. POST-WORK (Fills at Max Capacity in Gaps)
+    elif is_gap:
+        if post_pool > 0:
+            alloc = min(max_capacity, post_pool)
+            new_work += alloc
+            post_pool -= alloc
             
-    if len(gap_indices) > 0 and i == gap_indices[-1] and post_remaining > 0:
-        new_work += post_remaining
-        post_remaining = 0
-        
-    # 3. Trucks (Follows Gaussian Curve)
-    for t in trucks:
-        if t['sum_curve'] > 0:
-            new_work += (t['raw_curve'][i] / t['sum_curve']) * t['volume']
+    # 3. TRUCK PHASE (The Smart Pull System)
+    elif i >= first_arrival_idx:
+        if truck_pool > 0:
+            current_curve_val = scaled_gauss[i]
+            
+            is_falling = i > 0 and scaled_gauss[i] < scaled_gauss[i-1] - 0.001
+            
+            if is_falling:
+                # Ask: Do we have enough time to finish by RG if we let it drop?
+                tail_volume = sum(scaled_gauss[j] for j in range(i, rg_idx + 1))
+                
+                if tail_volume >= truck_pool:
+                    # Yes! Safe to lower the curve naturally.
+                    gen = current_curve_val
+                else:
+                    # NO! We will miss RG. Override the curve and lock at max capacity.
+                    gen = max_capacity
+            else:
+                # Curve is rising, follow it up
+                gen = current_curve_val
+                
+            alloc = min(gen, truck_pool)
+            new_work += alloc
+            truck_pool -= alloc
 
+    # Process Backlog
     pool = new_work + backlog
     processed = min(pool, max_capacity)
     backlog = pool - processed
