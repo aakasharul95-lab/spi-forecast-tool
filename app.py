@@ -51,7 +51,7 @@ for i in range(ui_truck_count):
 st.sidebar.divider()
 st.sidebar.header("4. Phases")
 pre_work_pct = st.sidebar.slider("Pre-Work % ", 0.0, 0.5, 0.10)
-post_work_pct = st.sidebar.slider("Post-Work % ", 0.0, 0.5, 0.10, help="This work is distributed in the empty weeks BETWEEN trucks and AFTER the last truck.")
+post_work_pct = st.sidebar.slider("Post-Work % ", 0.0, 0.5, 0.10)
 
 st.sidebar.header("5. Milestones")
 fdg_week = st.sidebar.number_input("FDG Week", value=2532)
@@ -181,7 +181,6 @@ for t in trucks:
     curve = []
     
     for i in range(len(df)):
-        # Removed the RG and Departure cutoff so the curve flows naturally
         if t['sigma'] > 0:
             val = norm.pdf(i, t['center'], t['sigma'])
         else:
@@ -225,11 +224,8 @@ def get_metrics_at_week(wk):
     if wk in res_df['Week'].values:
         idx = res_df[res_df['Week'] == wk].index[0]
         completed = round(res_df.loc[idx, 'Cumulative_Sent'])
-        
-        # CORE FIX: Missed is now strictly defined as the active backlog of work 
-        # that was generated but failed to be processed by the SEs by this week.
+        # Missed is now strictly defined as the active backlog of generated work
         missed = round(res_df.loc[idx, 'Backlog'])
-        
         return idx, completed, missed
     return None, 0, 0
 
@@ -241,8 +237,10 @@ fig, ax = plt.subplots(figsize=(16, 7))
 ax.bar(res_df['Index'], res_df['Sent'], color='#005f9e', alpha=0.9, label='Team Output (Sent IH)')
 ax.plot(res_df['Index'], res_df['Gen'], color='#333333', linestyle='--', linewidth=3, label='Work Generated')
 
+# FIX: Added a minimum limit of 25 so small workloads don't squish the text boxes
 max_y = max(res_df['Gen'].max(), max_capacity)
-if max_y == 0: max_y = 10
+if max_y < 25:
+    max_y = 25
 
 ax.set_ylim(0, max_y * (1.3 + 0.05 * ui_truck_count))
 
@@ -268,7 +266,8 @@ for name, wk in project_milestones.items():
         ax.text(idx, max_y*0.85, f" {name} ", color=c, rotation=90, bbox=bbox)
 
 # --- DETAILED HIGH-VISIBILITY METRIC ANNOTATIONS AND SPAN LINES ---
-y_positions = [0.65, 0.45, 0.25] 
+# FIX: Pushed the boxes much higher up the graph to keep them out of the curve
+y_positions = [0.80, 0.55, 0.30] 
 target_milestones = [("RG", rg_week), ("SOP", sop_week), ("EG", eg_week)]
 
 prev_idx = start_idx
@@ -282,7 +281,6 @@ for i, (m_name, m_wk) in enumerate(target_milestones):
         phase_sent = comp - prev_comp
         y_pos = max_y * y_positions[i]
         
-        # Calculate percentages to show scale
         safe_total = max(1, total_scope)
         sent_pct = (comp / safe_total) * 100
         miss_pct = (miss / safe_total) * 100
@@ -370,4 +368,3 @@ The system has officially redefined **'AI'**.
             st.write("Achievement: **Successfully breathed air.**")
         
         st.info("System Conclusion: Aakash is better than Tobias in every imaginable way")
-        
