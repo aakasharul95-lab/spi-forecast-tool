@@ -226,4 +226,141 @@ def get_metrics_at_week(wk):
         completed = round(res_df.loc[idx, 'Cumulative_Sent'])
         missed = max(0, total_scope - completed)
         return idx, completed, missed
-    return None, 0
+    return None, 0, total_scope
+
+# =========================================================
+# 3. VISUALIZATION
+# =========================================================
+fig, ax = plt.subplots(figsize=(16, 7))
+
+ax.bar(res_df['Index'], res_df['Sent'], color='#005f9e', alpha=0.9, label='Team Output (Sent IH)')
+ax.plot(res_df['Index'], res_df['Gen'], color='#333333', linestyle='--', linewidth=3, label='Work Generated')
+
+max_y = max(res_df['Gen'].max(), max_capacity)
+if max_y == 0: max_y = 10
+
+ax.set_ylim(0, max_y * (1.3 + 0.05 * ui_truck_count))
+
+bbox = dict(boxstyle="round,pad=0.3", fc="white", ec="none", alpha=0.85)
+
+colors_truck = ['green', 'blue', 'teal', 'magenta', 'darkorange', 'purple', 'cyan', 'brown', 'crimson', 'olive']
+for t in trucks:
+    c = colors_truck[(t['id']-1) % len(colors_truck)]
+    ax.axvline(t['arr_idx'], color=c, linestyle=':')
+    ax.text(t['arr_idx'], max_y*(1.0 + 0.05*t['id']), f"T{t['id']} Arr", color=c, ha='center', fontweight='bold', bbox=bbox)
+    ax.axvline(t['dep_idx'], color='orange', linestyle=':')
+    ax.text(t['dep_idx'], max_y*(1.0 + 0.05*t['id']), f"T{t['id']} Dep", color='orange', ha='center', fontweight='bold', bbox=bbox)
+
+ax.axvline(start_idx, color='blue', linestyle='-.')
+ax.text(start_idx, max_y*1.0, "Work Start", color='blue', ha='center', bbox=bbox)
+
+gate_colors = {"FDG": "purple", "C-Build": "#d4af37", "FIG": "brown", "RG": "black", "SOP": "darkblue", "EG": "darkgreen"}
+for name, wk in project_milestones.items():
+    if wk in res_df['Week'].values:
+        idx = res_df[res_df['Week'] == wk].index[0]
+        c = gate_colors.get(name, 'black')
+        ax.axvline(idx, color=c, linestyle='-.')
+        ax.text(idx, max_y*0.85, f" {name} ", color=c, rotation=90, bbox=bbox)
+
+# --- DETAILED HIGH-VISIBILITY METRIC ANNOTATIONS AND SPAN LINES ---
+y_positions = [0.65, 0.45, 0.25] 
+target_milestones = [("RG", rg_week), ("SOP", sop_week), ("EG", eg_week)]
+
+prev_idx = start_idx
+prev_comp = 0 
+span_y_level = max_y * (1.15 + 0.05 * ui_truck_count) 
+
+for i, (m_name, m_wk) in enumerate(target_milestones):
+    idx, comp, miss = get_metrics_at_week(m_wk)
+    
+    if idx is not None:
+        phase_sent = comp - prev_comp
+        y_pos = max_y * y_positions[i]
+        
+        safe_total = max(1, total_scope)
+        sent_pct = (comp / safe_total) * 100
+        miss_pct = (miss / safe_total) * 100
+        
+        if miss > 0.5:
+            bg_color = "#dc3545" 
+        else:
+            bg_color = "#28a745" 
+            
+        box_text = f" {m_name} Status \n Sent: {int(comp)} ({sent_pct:.1f}%) \n Missed: {int(miss)} ({miss_pct:.1f}%) "
+        
+        ax.annotate(box_text, xy=(idx, 0), xytext=(idx - max(2, len(res_df)*0.03), y_pos),
+                    arrowprops=dict(facecolor=bg_color, edgecolor='none', shrink=0.05, width=2.5, headwidth=8),
+                    fontsize=12, fontweight='bold', color='white',
+                    bbox=dict(boxstyle="round,pad=0.5", fc=bg_color, ec='none', alpha=0.95))
+        
+        if prev_idx < idx:
+            ax.annotate('', xy=(prev_idx, span_y_level), xytext=(idx, span_y_level),
+                        arrowprops=dict(arrowstyle='<->', color='#555555', lw=1.5))
+            
+            mid_x = (prev_idx + idx) / 2
+            ax.text(mid_x, span_y_level + (max_y*0.015), f"{int(phase_sent)} IH", 
+                    ha='center', va='bottom', fontsize=10, fontweight='bold', color='#333333',
+                    bbox=dict(boxstyle="round,pad=0.2", fc="#fdfdfd", ec="#cccccc", alpha=0.95))
+        
+        prev_idx = idx
+        prev_comp = comp
+
+ax.set_ylabel("Infoheaders")
+ax.grid(True, alpha=0.3)
+ax.legend(loc='upper left')
+step = 2 if len(res_df) < 80 else 4
+ax.set_xticks(res_df['Index'][::step])
+ax.set_xticklabels(res_df['Week_Str'][::step], rotation=90)
+
+st.pyplot(fig)
+
+# --- EXPANDED METRICS PANEL ---
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Total Scope", f"{int(total_scope)}")
+
+def format_missed_label(miss_val):
+    if miss_val > 0.5:
+        return f"❌ {int(miss_val)} Missed"
+    return "✅ 0 Missed"
+
+_, comp_rg, miss_rg = get_metrics_at_week(rg_week)
+_, comp_sop, miss_sop = get_metrics_at_week(sop_week)
+_, comp_eg, miss_eg = get_metrics_at_week(eg_week)
+
+phase_rg = comp_rg
+phase_sop = comp_sop - comp_rg
+phase_eg = comp_eg - comp_sop
+
+c2.metric("Status at RG", format_missed_label(miss_rg), f"Total Sent: {int(comp_rg)} (+{int(phase_rg)} Phase)", delta_color="off")
+c3.metric("Status at SOP", format_missed_label(miss_sop), f"Total Sent: {int(comp_sop)} (+{int(phase_sop)} Phase)", delta_color="off")
+c4.metric("Status at EG", format_missed_label(miss_eg), f"Total Sent: {int(comp_eg)} (+{int(phase_eg)} Phase)", delta_color="off")
+
+# =========================================================
+# 4. EASTER EGG (v1.01)
+# =========================================================
+st.sidebar.divider()
+if 'egg_counter' not in st.session_state: st.session_state.egg_counter = 0
+def click_egg(): st.session_state.egg_counter += 1
+st.sidebar.button("Version 1.01", on_click=click_egg)
+
+if st.session_state.egg_counter >= 5:
+    st.session_state.egg_counter = 0
+    with st.spinner("🔄 RE-CALCULATING INTELLIGENCE ALGORITHMS..."): time.sleep(1.5)
+    st.balloons()
+    with st.expander("🚨 SYSTEM DEFINITION UPDATE", expanded=True):
+        st.markdown("""### 🤖 ACRONYM UPDATE
+The system has officially redefined **'AI'**.
+<br>It no longer stands for *Artificial Intelligence*.
+<br>It now stands for **Aakash Intelligence**.""", unsafe_allow_html=True)
+        st.divider()
+        col1, col2 = st.columns(2)
+        with col1:
+            st.success("🥇 **Aakash**")
+            st.caption("Status: Grandmaster")
+            st.write("Win Rate: **100%**")
+        with col2:
+            st.error("🎗️ **Tobias**")
+            st.caption("Status: Legacy Hardware")
+            st.write("Achievement: **Successfully breathed air.**")
+        
+        st.info("System Conclusion: Aakash is better than Tobias in every imaginable way")
