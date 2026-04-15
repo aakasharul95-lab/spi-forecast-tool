@@ -137,7 +137,7 @@ except IndexError:
     st.error("⚠️ Critical Date Error: Please ensure all dates follow YYWW format.")
     st.stop()
 
-# --- Volume Calculations (Realistic Physics Model) ---
+# --- Volume Calculations ---
 demand_pre = total_scope * pre_work_pct
 demand_post = total_scope * post_work_pct
 demand_trucks_total = total_scope - (demand_pre + demand_post)
@@ -190,7 +190,7 @@ for t in trucks:
     t['raw_curve'] = curve
     t['sum_curve'] = sum(curve)
 
-# --- Simulation Loop (Realistic Logistics) ---
+# --- Simulation Loop ---
 data = []
 backlog = 0
 
@@ -224,9 +224,13 @@ def get_metrics_at_week(wk):
     if wk in res_df['Week'].values:
         idx = res_df[res_df['Week'] == wk].index[0]
         completed = round(res_df.loc[idx, 'Cumulative_Sent'])
-        missed = max(0, total_scope - completed)
+        
+        # CORE FIX: Missed is now strictly defined as the active backlog of work 
+        # that was generated but failed to be processed by the SEs by this week.
+        missed = round(res_df.loc[idx, 'Backlog'])
+        
         return idx, completed, missed
-    return None, 0, total_scope
+    return None, 0, 0
 
 # =========================================================
 # 3. VISUALIZATION
