@@ -137,24 +137,21 @@ except IndexError:
     st.error("⚠️ Critical Date Error: Please ensure all dates follow YYWW format.")
     st.stop()
 
-# --- Volume Calculations (Infinite Truck / Relative Capacity Model) ---
+# --- Volume Calculations ---
 demand_pre = total_scope * pre_work_pct
 demand_post = total_scope * post_work_pct
 demand_trucks_total = total_scope - (demand_pre + demand_post)
 
-# In the Infinite Truck model, there is NEVER unassigned volume left behind
 unassigned_volume = 0
-
 total_effective_weight = 0
+
 for t in trucks:
     t['effective_weight'] = t['physical_size'] * t['weight']
     total_effective_weight += t['effective_weight']
 
-# Calculate a relative denominator to distribute 100% of the load across whatever trucks exist
 safe_denominator = max(0.01, total_effective_weight)
 
 for t in trucks:
-    # 100% of the assigned scope is forced onto the available trucks, regardless of their size
     t['volume'] = demand_trucks_total * (t['effective_weight'] / safe_denominator)
 
 first_arrival_idx = min(t['arr_idx'] for t in trucks)
@@ -182,10 +179,10 @@ else:
 # --- Bell Curves ---
 for t in trucks:
     curve = []
-    cutoff_idx = min(rg_idx, t['dep_idx'])
     
     for i in range(len(df)):
-        if i <= cutoff_idx and t['sigma'] > 0:
+        # Removed the RG and Departure cutoff so the curve flows naturally
+        if t['sigma'] > 0:
             val = norm.pdf(i, t['center'], t['sigma'])
         else:
             val = 0
@@ -211,6 +208,7 @@ for i in range(len(df)):
         if t['sum_curve'] > 0:
             new_work += (t['raw_curve'][i] / t['sum_curve']) * t['volume']
 
+    # The SEs can only work on the pool of work that HAS ALREADY been generated
     pool = new_work + backlog
     processed = min(pool, max_capacity)
     backlog = pool - processed
@@ -223,14 +221,17 @@ res_df = res_df.merge(df, left_on='Index', right_on='Index')
 # Track cumulative sent infoheaders
 res_df['Cumulative_Sent'] = res_df['Sent'].cumsum()
 
-# Helper function to grab metrics at specific milestone weeks
 def get_metrics_at_week(wk):
     if wk in res_df['Week'].values:
         idx = res_df[res_df['Week'] == wk].index[0]
         completed = round(res_df.loc[idx, 'Cumulative_Sent'])
-        missed = max(0, total_scope - completed)
+        
+        # CORE FIX: Missed is now strictly defined as the active backlog of work 
+        # that was generated but failed to be processed by the SEs by this week.
+        missed = round(res_df.loc[idx, 'Backlog'])
+        
         return idx, completed, missed
-    return None, 0, total_scope
+    return None, 0, 0
 
 # =========================================================
 # 3. VISUALIZATION
@@ -281,19 +282,23 @@ for i, (m_name, m_wk) in enumerate(target_milestones):
         phase_sent = comp - prev_comp
         y_pos = max_y * y_positions[i]
         
-        # 1. Draw the High-visibility Status Boxes
+        # Calculate percentages to show scale
+        safe_total = max(1, total_scope)
+        sent_pct = (comp / safe_total) * 100
+        miss_pct = (miss / safe_total) * 100
+        
         if miss > 0.5:
-            bg_color = "#dc3545" # Crimson Red
+            bg_color = "#dc3545" 
         else:
-            bg_color = "#28a745" # Success Green
+            bg_color = "#28a745" 
             
-        box_text = f" {m_name} Status \n Sent: {int(comp)} \n Missed: {int(miss)} "
+        box_text = f" {m_name} Status \n Sent: {int(comp)} ({sent_pct:.1f}%) \n Missed: {int(miss)} ({miss_pct:.1f}%) "
+        
         ax.annotate(box_text, xy=(idx, 0), xytext=(idx - max(2, len(res_df)*0.03), y_pos),
                     arrowprops=dict(facecolor=bg_color, edgecolor='none', shrink=0.05, width=2.5, headwidth=8),
                     fontsize=12, fontweight='bold', color='white',
                     bbox=dict(boxstyle="round,pad=0.5", fc=bg_color, ec='none', alpha=0.95))
         
-        # 2. Draw the Horizontal Span Line (Dimension Line)
         if prev_idx < idx:
             ax.annotate('', xy=(prev_idx, span_y_level), xytext=(idx, span_y_level),
                         arrowprops=dict(arrowstyle='<->', color='#555555', lw=1.5))
@@ -365,3 +370,4 @@ The system has officially redefined **'AI'**.
             st.write("Achievement: **Successfully breathed air.**")
         
         st.info("System Conclusion: Aakash is better than Tobias in every imaginable way")
+        
