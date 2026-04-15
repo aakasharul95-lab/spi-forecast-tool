@@ -21,6 +21,14 @@ se_count = st.sidebar.number_input("SE Headcount", value=3.0, step=0.5)
 ih_per_se = st.sidebar.number_input("IH per SE/Week", value=5.0, step=0.1)
 
 st.sidebar.divider()
+st.sidebar.header("⚙️ Simulation Mode")
+pure_capacity_mode = st.sidebar.toggle(
+    "Pure Capacity Mode", 
+    value=True, 
+    help="When active, all work is available at the Start Week, making SE Headcount the ONLY bottleneck. Turn off to strictly follow truck arrival dates."
+)
+
+st.sidebar.divider()
 st.sidebar.header("3. Choose the number of trucks you will receive")
 
 num_trucks_input = st.sidebar.number_input("Number of Trucks", min_value=0.10, max_value=10.00, value=3.00, step=0.10, format="%.2f")
@@ -137,7 +145,7 @@ except IndexError:
     st.error("⚠️ Critical Date Error: Please ensure all dates follow YYWW format.")
     st.stop()
 
-# --- Volume Calculations (Infinite Truck / Relative Capacity Model) ---
+# --- Volume Calculations ---
 demand_pre = total_scope * pre_work_pct
 demand_post = total_scope * post_work_pct
 demand_trucks_total = total_scope - (demand_pre + demand_post)
@@ -179,14 +187,12 @@ else:
 # --- Bell Curves ---
 for t in trucks:
     curve = []
-    
     for i in range(len(df)):
         if t['sigma'] > 0:
             val = norm.pdf(i, t['center'], t['sigma'])
         else:
             val = 0
         curve.append(val)
-        
     t['raw_curve'] = curve
     t['sum_curve'] = sum(curve)
 
@@ -194,24 +200,36 @@ for t in trucks:
 data = []
 backlog = 0
 
-for i in range(len(df)):
-    new_work = 0
-    
-    if i >= start_idx and i < first_arrival_idx:
-        new_work += rate_pre
+if pure_capacity_mode:
+    # MODE A: PURE CAPACITY (SE Count is the only constraint)
+    for i in range(len(df)):
+        new_work = total_scope if i == start_idx else 0
         
-    if i in gap_indices:
-        new_work += rate_post
+        pool = new_work + backlog
+        processed = min(pool, max_capacity)
+        backlog = pool - processed
         
-    for t in trucks:
-        if t['sum_curve'] > 0:
-            new_work += (t['raw_curve'][i] / t['sum_curve']) * t['volume']
+        data.append({"Index": i, "Gen": new_work, "Sent": processed, "Backlog": backlog})
+else:
+    # MODE B: TRUCK SCHEDULE (Time is a constraint)
+    for i in range(len(df)):
+        new_work = 0
+        
+        if i >= start_idx and i < first_arrival_idx:
+            new_work += rate_pre
+            
+        if i in gap_indices:
+            new_work += rate_post
+            
+        for t in trucks:
+            if t['sum_curve'] > 0:
+                new_work += (t['raw_curve'][i] / t['sum_curve']) * t['volume']
 
-    pool = new_work + backlog
-    processed = min(pool, max_capacity)
-    backlog = pool - processed
-    
-    data.append({"Index": i, "Gen": new_work, "Sent": processed, "Backlog": backlog})
+        pool = new_work + backlog
+        processed = min(pool, max_capacity)
+        backlog = pool - processed
+        
+        data.append({"Index": i, "Gen": new_work, "Sent": processed, "Backlog": backlog})
 
 res_df = pd.DataFrame(data)
 res_df = res_df.merge(df, left_on='Index', right_on='Index')
@@ -235,20 +253,27 @@ fig, ax = plt.subplots(figsize=(16, 7))
 ax.bar(res_df['Index'], res_df['Sent'], color='#005f9e', alpha=0.9, label='Team Output (Sent IH)')
 ax.plot(res_df['Index'], res_df['Gen'], color='#333333', linestyle='--', linewidth=3, label='Work Generated')
 
-max_y = max(res_df['Gen'].max(), max_capacity)
+# Add Capacity Line
+ax.axhline(max_capacity, color='red', linestyle='--', alpha=0.5, label=f'Weekly Capacity ({max_capacity} IH)')
+
+max_demand = res_df['Gen'].max()
+max_y = max(max_demand, max_capacity)
 if max_y == 0: max_y = 10
 
+# Dynamic Y-Axis so nothing gets cut off
 ax.set_ylim(0, max_y * (1.3 + 0.05 * ui_truck_count))
 
 bbox = dict(boxstyle="round,pad=0.3", fc="white", ec="none", alpha=0.85)
 
-colors_truck = ['green', 'blue', 'teal', 'magenta', 'darkorange', 'purple', 'cyan', 'brown', 'crimson', 'olive']
-for t in trucks:
-    c = colors_truck[(t['id']-1) % len(colors_truck)]
-    ax.axvline(t['arr_idx'], color=c, linestyle=':')
-    ax.text(t['arr_idx'], max_y*(1.0 + 0.05*t['id']), f"T{t['id']} Arr", color=c, ha='center', fontweight='bold', bbox=bbox)
-    ax.axvline(t['dep_idx'], color='orange', linestyle=':')
-    ax.text(t['dep_idx'], max_y*(1.0 + 0.05*t['id']), f"T{t['id']} Dep", color='orange', ha='center', fontweight='bold', bbox=bbox)
+# Only show truck markers if not in pure capacity mode (optional visual cleanup)
+if not pure_capacity_mode:
+    colors_truck = ['green', 'blue', 'teal', 'magenta', 'darkorange', 'purple', 'cyan', 'brown', 'crimson', 'olive']
+    for t in trucks:
+        c = colors_truck[(t['id']-1) % len(colors_truck)]
+        ax.axvline(t['arr_idx'], color=c, linestyle=':')
+        ax.text(t['arr_idx'], max_y*(1.0 + 0.05*t['id']), f"T{t['id']} Arr", color=c, ha='center', fontweight='bold', bbox=bbox)
+        ax.axvline(t['dep_idx'], color='orange', linestyle=':')
+        ax.text(t['dep_idx'], max_y*(1.0 + 0.05*t['id']), f"T{t['id']} Dep", color='orange', ha='center', fontweight='bold', bbox=bbox)
 
 ax.axvline(start_idx, color='blue', linestyle='-.')
 ax.text(start_idx, max_y*1.0, "Work Start", color='blue', ha='center', bbox=bbox)
@@ -287,7 +312,6 @@ for i, (m_name, m_wk) in enumerate(target_milestones):
         else:
             bg_color = "#28a745" # Success Green
             
-        # FIX: Added percentage calculations directly to the label text
         box_text = f" {m_name} Status \n Sent: {int(comp)} ({sent_pct:.1f}%) \n Missed: {int(miss)} ({miss_pct:.1f}%) "
         
         ax.annotate(box_text, xy=(idx, 0), xytext=(idx - max(2, len(res_df)*0.03), y_pos),
@@ -348,7 +372,8 @@ st.sidebar.button("Version 1.01", on_click=click_egg)
 
 if st.session_state.egg_counter >= 5:
     st.session_state.egg_counter = 0
-    with st.spinner("🔄 RE-CALCULATING INTELLIGENCE ALGORITHMS..."): time.sleep(1.5)
+    with st.spinner("🔄 RE-CALCULATING INTELLIGENCE ALGORITHMS..."): 
+        time.sleep(1.5)
     st.balloons()
     with st.expander("🚨 SYSTEM DEFINITION UPDATE", expanded=True):
         st.markdown("""### 🤖 ACRONYM UPDATE
