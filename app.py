@@ -153,20 +153,27 @@ for t in trucks:
 first_arrival_idx = min(t['arr_idx'] for t in trucks)
 truck_windows = [(t['arr_idx'], t['dep_idx']) for t in trucks]
 
-# --- SMART THROTTLE MAP (Defines the shape of the generation) ---
+# --- SMART THROTTLE MAP (PER-TRUCK NORMALIZATION) ---
 throttle_map = [0.0] * len(df)
 
 for t in trucks:
+    truck_curve = [0.0] * len(df)
     span = t['dep_idx'] - t['arr_idx']
     center = t['arr_idx'] + (span * 0.15) 
     sigma = (span / 8) if span > 0 else 0.5 
     
+    # Generate the base curve for this specific truck
     for i in range(len(df)):
         if sigma > 0:
-            throttle_map[i] += norm.pdf(i, center, sigma) * t['volume']
-
-max_throttle = max(throttle_map) if max(throttle_map) > 0 else 1.0
-throttle_map = [val / max_throttle for val in throttle_map]
+            truck_curve[i] = norm.pdf(i, center, sigma)
+            
+    # Normalize THIS truck's curve so its peak is exactly 1.0 (100% capacity)
+    local_max = max(truck_curve) if max(truck_curve) > 0 else 1.0
+    truck_curve = [val / local_max for val in truck_curve]
+    
+    # Merge into the global throttle map by always taking the highest active value
+    for i in range(len(df)):
+        throttle_map[i] = max(throttle_map[i], truck_curve[i])
 
 # --- SIMULATION LOOP (Capacity-Driven Pull System) ---
 data = []
@@ -174,7 +181,7 @@ backlog = 0
 pre_pool = demand_pre
 post_pool = demand_post
 active_truck_pool = 0.0
-truck_processed_global = 0.0 # NEW: Tracks total truck work done across the whole timeline
+truck_processed_global = 0.0 
 
 for i in range(len(df)):
     new_work = 0
@@ -208,14 +215,11 @@ for i in range(len(df)):
         if active_truck_pool > 0:
             natural_pull = max_capacity * throttle_map[i]
             
-            # THE FIX: Look at the ENTIRE remaining project scope, not just the active pool
             global_truck_work_remaining = demand_trucks_total - truck_processed_global
             weeks_left_to_rg = max(1, rg_idx - i)
             
-            # How fast must we go to finish everything by RG?
             required_speed = global_truck_work_remaining / weeks_left_to_rg
             
-            # If the required speed puts us in the danger zone, lock the curve at Max Capacity
             if required_speed >= max_capacity * 0.95:
                 desired_work = max_capacity
             else:
