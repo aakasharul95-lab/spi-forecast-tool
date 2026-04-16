@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.lines import Line2D
@@ -43,6 +44,7 @@ def run_simulation(total_ih, se_count, ih_per_se, ramp_wks,
     post_ih  = total_ih * post_pct
     truck_ih = max(0.0, total_ih - pre_ih - post_ih)
 
+    # Resolve truck indices
     tk_objs = []
     for t in trucks:
         ai, di = get_idx(t["arr"]), get_idx(t["dep"])
@@ -52,33 +54,53 @@ def run_simulation(total_ih, se_count, ih_per_se, ramp_wks,
     first_arr = min((t["ai"] for t in tk_objs), default=si + 8)
     last_dep  = max((t["di"] for t in tk_objs), default=si + 20)
 
-    truck_set = set()
-    for t in tk_objs:
-        truck_set.update(range(t["ai"], t["di"] + 1))
-    trk_wk_cnt = max(len(truck_set), 1)
-    pre_wks  = max(1, first_arr - si)
-    post_wks = max(1, min(30, N - last_dep - 1))
+    # ── Work pool: pre-work flat, trucks as bell curves, post-work flat ───────
+    pool = np.zeros(N)
 
-    pool = [0.0] * N
+    # Pre-work: flat from work start to first truck arrival
+    pre_wks = max(1, first_arr - si)
     for i in range(si, min(first_arr, N)):
         pool[i] += pre_ih / pre_wks
-    for i in range(N):
-        if i in truck_set:
-            pool[i] += truck_ih / trk_wk_cnt
+
+    # Each truck: Gaussian bell peaking at centre of truck window
+    # Weight by truck's share of truck_ih (equal split across trucks)
+    n_trucks = max(len(tk_objs), 1)
+    for t in tk_objs:
+        ai, di    = t["ai"], t["di"]
+        center    = (ai + di) / 2.0
+        span      = max(di - ai, 1)
+        sigma     = span / 4.0           # bell covers ~95% of window
+        raw       = np.array([
+            np.exp(-0.5 * ((i - center) / sigma) ** 2) if ai <= i <= di else 0.0
+            for i in range(N)
+        ])
+        total_raw = raw.sum()
+        if total_raw > 0:
+            pool += raw / total_raw * (truck_ih / n_trucks)
+
+    # Post-work: flat after last truck departs
+    post_wks = max(1, min(30, N - last_dep - 1))
     for i in range(last_dep + 1, min(last_dep + 1 + post_wks, N)):
         pool[i] += post_ih / post_wks
 
-    # Ramp triggers: work start + every truck arrival
-    ramp_triggers = sorted(set([si] + [t["ai"] for t in tk_objs]))
-    rg_idx = get_idx(milestones.get("RG", 0))
+    # ── Gate indices (ordered: RG → SOP → EG) ────────────────────────────────
+    gate_names = ["RG", "SOP", "EG"]
+    gate_idxs  = []
+    for gn in gate_names:
+        gi = get_idx(milestones.get(gn, 0))
+        if gi >= 0:
+            gate_idxs.append(gi)
 
+    # ── Ramp triggers: work start + every truck arrival ───────────────────────
+    ramp_triggers = sorted(set([si] + [t["ai"] for t in tk_objs]))
+
+    # ── Main simulation loop ──────────────────────────────────────────────────
     bl, cum = 0.0, 0.0
     rows = []
     for i, wk in enumerate(weeks):
-        remaining   = max(0.0, total_ih - cum)
-        weeks_to_rg = max(0, rg_idx - i) if rg_idx >= 0 else 999
+        remaining = max(0.0, total_ih - cum)
 
-        # Most recent ramp trigger at or before this week
+        # Ramp-up: find most recent trigger and compute ramp factor
         past = [r for r in ramp_triggers if r <= i]
         if past:
             weeks_since = i - max(past)
@@ -88,30 +110,43 @@ def run_simulation(total_ih, se_count, ih_per_se, ramp_wks,
 
         ramped_cap = full_cap * ramp_factor
 
-        # Ramp down only if remaining IH fits before RG at current full pace
-        if weeks_to_rg > 0 and remaining > 0 and remaining < ramped_cap * weeks_to_rg:
-            effective_cap = remaining / weeks_to_rg
-        else:
-            effective_cap = ramped_cap
+        # Ramp-down: find the nearest upcoming gate that hasn't been met yet
+        # Only ramp down when remaining IH fits before that gate at full pace
+        effective_cap = ramped_cap   # default: stay at full ramp
+        for gi in sorted(gate_idxs):
+            if gi <= i:
+                continue                          # gate already passed
+            weeks_to_gate = gi - i
+            if weeks_to_gate <= 0:
+                continue
+            # If we can comfortably finish before this gate, ramp down to exact pace
+            if remaining > 0 and remaining < ramped_cap * weeks_to_gate:
+                effective_cap = remaining / weeks_to_gate
+            else:
+                # Can't meet this gate at reduced pace — stay at full capacity
+                effective_cap = ramped_cap
+            break   # only look at the nearest upcoming gate
 
-        avail = pool[i] + bl
+        avail = float(pool[i]) + bl
         sent  = min(avail, effective_cap, remaining)
         bl    = max(0.0, avail - sent)
         cum   = min(total_ih, cum + sent)
         rows.append({
-            "idx":  i,  "wk": wk,
-            "cap":  round(effective_cap, 2),
-            "fcap": round(ramped_cap,    2),
-            "pool": round(pool[i],       2),
-            "sent": round(sent,          2),
-            "bl":   round(bl,            2),
-            "cum":  round(cum,           2),
+            "idx":  i,
+            "wk":   wk,
+            "cap":  round(effective_cap, 2),   # effective (with ramp-down)
+            "fcap": round(ramped_cap,    2),   # theoretical max at current ramp
+            "pool": round(float(pool[i]), 2),
+            "sent": round(sent, 2),
+            "bl":   round(bl,   2),
+            "cum":  round(cum,  2),
         })
 
     df = pd.DataFrame(rows)
 
+    # Milestone status
     ms_status = {}
-    for name in ("RG", "SOP", "EG"):
+    for name in gate_names:
         wk = milestones.get(name)
         if not wk:
             continue
@@ -139,18 +174,25 @@ ih_per_se = st.sidebar.number_input("IH / SE / week",    value=8,    step=1,   m
 ramp_wks  = st.sidebar.number_input("Ramp-up weeks",     value=4,    step=1,   min_value=1, max_value=20)
 
 st.sidebar.header("Schedule")
-start_wk = st.sidebar.number_input("Work start (YYWW)", value=2535)
+start_wk = st.sidebar.number_input(
+    "Work start week (YYWW)",
+    value=2535,
+    help="Week SEs start sending IH to publishing. Start of pre-work phase."
+)
 pre_pct  = st.sidebar.slider("Pre-work %",  0, 50, 10, step=5,
-    help="IH writable before first truck — SEs work at full capacity") / 100
+    help="IH completable before first truck arrives — runs at full SE capacity") / 100
 post_pct = st.sidebar.slider("Post-work %", 0, 50, 10, step=5,
-    help="IH after last truck leaves — SEs work at full capacity") / 100
+    help="IH completable after last truck leaves — runs at full SE capacity") / 100
 
 st.sidebar.header("Truck verification windows")
-st.sidebar.caption("Physical truck presence for verification only. No SE capacity limit — SEs always work at full rate.")
+st.sidebar.caption(
+    "SEs ramp up on each truck arrival. "
+    "IH is distributed as a bell curve peaking mid-window."
+)
 num_trucks = st.sidebar.number_input("Number of trucks", value=2, min_value=1, max_value=10, step=1)
 
 trucks = []
-for i in range(num_trucks):
+for i in range(int(num_trucks)):
     with st.sidebar.expander(f"Truck {i + 1}", expanded=True):
         default_arr = 2545 + i * 10
         arr = st.number_input("Arrival (YYWW)",   value=default_arr,     key=f"arr_{i}")
@@ -180,17 +222,16 @@ df, ms_status, tk_objs, full_cap, completion_wk = result
 # ── Header ────────────────────────────────────────────────────────────────────
 
 st.title("SE Workpackage Estimation")
-
 all_ok = all(s.get("ok", False) for s in ms_status.values())
 if completion_wk:
+    extra = "  — more SEs moves completion earlier" if all_ok else ""
     st.caption(
-        f"**{se_count} SE** · **{full_cap} IH/week** at peak · **{total_ih:,} total IH** "
-        f"· ✅ Completes **{fmt_wk(completion_wk)}**"
-        + (" — increasing SE moves completion earlier without changing pass/fail status" if all_ok else "")
+        f"**{se_count} SE** · **{full_cap} IH/week** peak · **{total_ih:,} total IH** "
+        f"· Completes **{fmt_wk(completion_wk)}**{extra}"
     )
 else:
     st.caption(
-        f"**{se_count} SE** · **{full_cap} IH/week** at peak · **{total_ih:,} total IH** "
+        f"**{se_count} SE** · **{full_cap} IH/week** peak · **{total_ih:,} total IH** "
         "· ❌ Will not complete in planning window"
     )
 
@@ -198,8 +239,8 @@ else:
 
 cols = st.columns(3)
 for col, name in zip(cols, ("RG", "SOP", "EG")):
-    s       = ms_status.get(name)
-    wk_lbl  = fmt_wk(milestones[name])
+    s      = ms_status.get(name)
+    wk_lbl = fmt_wk(milestones[name])
     with col:
         if s is None:
             st.info(f"**{name}** · {wk_lbl} — not in timeline")
@@ -210,13 +251,11 @@ for col, name in zip(cols, ("RG", "SOP", "EG")):
                   delta=delta, delta_color="normal" if s["ok"] else "inverse")
         st.caption(f"{s['done']:,} / {total_ih:,} IH")
 
-# SE capacity explainer
 if all_ok and completion_wk:
     st.info(
-        "ℹ️ **Why doesn't increasing SE change the status?**  "
-        "Your current SE headcount already provides enough capacity to complete all IH before every milestone. "
-        "Adding more SEs shifts the **completion date earlier** — watch the green 'Completion' marker move left on the chart. "
-        "The pass/fail status only changes when capacity is the bottleneck *before* a milestone deadline."
+        "All milestones on track. "
+        "Increasing SE count moves the completion date earlier — "
+        "watch the green marker shift left."
     )
 
 st.divider()
@@ -226,29 +265,23 @@ st.divider()
 CLR_BURNUP   = "#378ADD"
 CLR_WORK_GEN = "#222222"
 CLR_CAPACITY = "#BA7517"
+CLR_FCAP     = "#E8C07A"   # max cap reference (lighter amber)
 CLR_SCOPE    = "#E24B4A"
 CLR_WSTART   = "#7755AA"
 CLR_GRID     = "#ebebeb"
 CLR_COMP     = "#22a855"
-
 MS_COLORS = {
-    "FDG":    "#AA44AA",
-    "CBuild": "#CC8800",
-    "FIG":    "#CC3322",
-    "RG":     "#444444",
-    "SOP":    "#1144CC",
-    "EG":     "#228B22",
+    "FDG": "#AA44AA", "CBuild": "#CC8800", "FIG": "#CC3322",
+    "RG":  "#444444", "SOP":    "#1144CC", "EG":  "#228B22",
 }
 TRUCK_COLORS = [
     "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
     "#9467bd", "#8c564b", "#e377c2", "#17becf",
 ]
 
-# ── X-axis helpers ────────────────────────────────────────────────────────────
-
 tick_df   = df[df["idx"] % 4 == 0]
 tick_pos  = tick_df["idx"].tolist()
-tick_lbls = [str(int(w)) for w in tick_df["wk"]]   # raw YYWW on x-axis
+tick_lbls = [str(int(w)) for w in tick_df["wk"]]
 
 def ms_idx(name):
     row = df[df["wk"] == milestones.get(name, 0)]
@@ -261,13 +294,11 @@ def get_cum_at(name):
     row = df[df["wk"] == wk]
     return float(row.iloc[0]["cum"]) if not row.empty else 0.0
 
-# Scale
-max_y      = max(df["pool"].max(), df["cap"].max(), df["sent"].max()) * 1.1
-max_y      = max(max_y, 1.0)
-ARROW_Y    = [max_y * 1.22, max_y * 1.14, max_y * 1.06]   # 3 dimension arrows
-EXT_YLIM   = max_y * 1.42                                  # total y height of ax2
+max_y    = max(df["pool"].max(), df["fcap"].max(), df["sent"].max()) * 1.1
+max_y    = max(max_y, 1.0)
+ARROW_Y  = [max_y * 1.22, max_y * 1.14, max_y * 1.06]
+EXT_YLIM = max_y * 1.42
 
-# Work start x
 si_row = df[df["wk"] == start_wk]["idx"]
 si_x   = int(si_row.iloc[0]) if not si_row.empty else None
 
@@ -279,20 +310,19 @@ fig, (ax1, ax2) = plt.subplots(
     sharex=True,
 )
 fig.patch.set_facecolor("white")
-
 for ax in (ax1, ax2):
     ax.set_facecolor("white")
     ax.grid(axis="y", color=CLR_GRID, linewidth=0.6, zorder=0)
     ax.spines[["top", "right", "left", "bottom"]].set_visible(False)
     ax.tick_params(left=False, bottom=False, labelcolor="#555")
 
-# Truck on-site bands (both axes)
+# Truck on-site bands
 for t in tk_objs:
     for ax in (ax1, ax2):
         ax.axvspan(t["ai"], t["di"], color=CLR_BURNUP, alpha=0.07, zorder=1)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# AX1 — BURNUP
+# AX1  —  BURNUP
 # ═══════════════════════════════════════════════════════════════════════════════
 
 ax1.axhline(total_ih, color=CLR_SCOPE, lw=1.5, ls="--", zorder=2)
@@ -309,46 +339,47 @@ if si_x is not None:
              f"Work Start\n{fmt_wk(start_wk)}",
              fontsize=8.5, color=CLR_WSTART, va="center", ha="left")
 
-# Completion marker
+# Completion
 if completion_wk:
     comp_row = df[df["wk"] == completion_wk]
     if not comp_row.empty:
         cidx = int(comp_row.iloc[0]["idx"])
-        ax1.axvline(cidx, color=CLR_COMP, lw=2, ls="-", zorder=5, alpha=0.80)
+        ax1.axvline(cidx, color=CLR_COMP, lw=2, zorder=5, alpha=0.85)
         ax1.text(cidx + 0.4, total_ih * 0.46,
                  f"Done\n{fmt_wk(completion_wk)}",
                  fontsize=8.5, color=CLR_COMP, va="center", ha="left",
                  bbox=dict(boxstyle="round,pad=0.3", fc="#e6f9ee", ec=CLR_COMP, lw=0.8))
 
-# Milestone lines
+# Milestone verticals
 for name, wk in milestones.items():
     idx = ms_idx(name)
     if idx is None:
         continue
     color  = MS_COLORS.get(name, "#999")
     is_key = name in ("RG", "SOP", "EG")
-    ax1.axvline(idx, color=color, lw=1.8 if is_key else 1.0,
-                ls="-" if is_key else (0, (4, 4)), zorder=4, alpha=0.85)
+    ax1.axvline(idx, color=color,
+                lw=1.8 if is_key else 1.0,
+                ls="-" if is_key else (0, (4, 4)),
+                zorder=4, alpha=0.85)
     ax1.text(idx + 0.3, total_ih * 1.025, name,
              fontsize=8.5, color=color, va="top", ha="left")
 
-# Status annotations on burnup
-STATUS_Y_FRAC = {"RG": 0.55, "SOP": 0.35, "EG": 0.18}
+# Status annotations
+STATUS_Y = {"RG": 0.55, "SOP": 0.35, "EG": 0.18}
 for name in ("RG", "SOP", "EG"):
     s = ms_status.get(name)
     if not s:
         continue
-    idx   = ms_idx(name)
-    color = MS_COLORS[name]
-    bg    = "#e8f5e9" if s["ok"] else "#ffebee"
-    fc    = "#2e7d32" if s["ok"] else "#c62828"
-    miss_str = "✓ On track" if s["ok"] else f"✗ Miss {s['miss']:,} IH"
-    label = f"{name}: {s['done']:,}/{total_ih:,} IH\n{miss_str}"
-    y_pos = total_ih * STATUS_Y_FRAC.get(name, 0.4)
+    idx      = ms_idx(name)
+    color    = MS_COLORS[name]
+    bg       = "#e8f5e9" if s["ok"] else "#ffebee"
+    fc       = "#2e7d32" if s["ok"] else "#c62828"
+    miss_str = "On track" if s["ok"] else f"Miss {s['miss']:,} IH"
+    label    = f"{name}: {s['done']:,}/{total_ih:,} IH\n{miss_str}"
     ax1.annotate(
         label,
         xy=(idx, get_cum_at(name)),
-        xytext=(idx + 3, y_pos),
+        xytext=(idx + 3, total_ih * STATUS_Y.get(name, 0.4)),
         fontsize=8.5, color=fc, ha="left", va="center",
         bbox=dict(boxstyle="round,pad=0.4", fc=bg, ec=color, lw=1.2),
         arrowprops=dict(arrowstyle="-|>", color=color, lw=1.0),
@@ -361,9 +392,9 @@ ax1.set_title("Cumulative progress  ·  burnup", fontsize=11, color="#444",
               fontweight="normal", loc="left", pad=8)
 
 b_legend = [
-    Line2D([0],[0], color=CLR_BURNUP, lw=2.5,              label="Cumulative IH"),
-    Line2D([0],[0], color=CLR_SCOPE,  lw=1.5, ls="--",     label=f"Scope ({total_ih:,})"),
-    Line2D([0],[0], color=CLR_WSTART, lw=1.8, ls="--",     label="Work start"),
+    Line2D([0],[0], color=CLR_BURNUP, lw=2.5,          label="Cumulative IH"),
+    Line2D([0],[0], color=CLR_SCOPE,  lw=1.5, ls="--", label=f"Scope ({total_ih:,})"),
+    Line2D([0],[0], color=CLR_WSTART, lw=1.8, ls="--", label="Work start"),
 ]
 if completion_wk:
     b_legend.append(Line2D([0],[0], color=CLR_COMP, lw=2,
@@ -372,49 +403,51 @@ ax1.legend(handles=b_legend, loc="upper left", fontsize=8.5,
            framealpha=0.9, edgecolor="#ddd", ncol=4)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# AX2 — WEEKLY DETAIL
+# AX2  —  WEEKLY DETAIL
 # ═══════════════════════════════════════════════════════════════════════════════
 
 ax2.set_ylim(0, EXT_YLIM)
 
-# Bars: weekly output
-ax2.bar(df["idx"], df["sent"], color=CLR_BURNUP, alpha=0.80, zorder=2,
-        width=0.85, label="Team output (sent IH)")
+# Weekly output bars
+ax2.bar(df["idx"], df["sent"], color=CLR_BURNUP, alpha=0.80,
+        zorder=2, width=0.85, label="Team output (sent IH)")
 
-# Work available per week (dashed black)
+# Work available per week — bell curves visible here
 ax2.plot(df["idx"], df["pool"], color=CLR_WORK_GEN, lw=2, ls="--",
-         zorder=3, label="Work available per week")
+         zorder=3, label="Work available (bell curve)")
 
-# Max SE capacity reference (amber dotted)
-ax2.plot(df["idx"], df["fcap"], color=CLR_CAPACITY, lw=1.2, ls=":",
-         zorder=2, alpha=0.45, label="Max SE capacity")
-# Effective capacity with ramp-up and ramp-down
-ax2.plot(df["idx"], df["cap"],  color=CLR_CAPACITY, lw=1.8, ls="-.",
-         zorder=3, alpha=0.90, label="Effective capacity")
+# Max SE capacity reference (light amber dotted)
+ax2.plot(df["idx"], df["fcap"], color=CLR_FCAP, lw=1.4, ls=":",
+         zorder=2, label="Max SE capacity")
 
-# Subtle separator between data zone and annotation zone
-ax2.axhline(max_y, color="#bbbbbb", lw=0.5, zorder=1)
+# Effective capacity with ramp-up and smart ramp-down (amber)
+ax2.plot(df["idx"], df["cap"], color=CLR_CAPACITY, lw=2, ls="-.",
+         zorder=3, label="Effective capacity (ramp-up / ramp-down)")
 
-# Work start line + label
+# Data/annotation separator
+ax2.axhline(max_y, color="#cccccc", lw=0.5, zorder=1)
+
+# Work start
 if si_x is not None:
     ax2.axvline(si_x, color=CLR_WSTART, lw=2, ls="--", zorder=5, alpha=0.85)
     ax2.text(si_x - 0.5, max_y * 0.90,
              f"Work Start\n{fmt_wk(start_wk)}",
              fontsize=8.5, color=CLR_WSTART, va="top", ha="right",
-             bbox=dict(boxstyle="round,pad=0.3", fc="white", ec=CLR_WSTART, lw=0.7, alpha=0.9))
+             bbox=dict(boxstyle="round,pad=0.3", fc="white",
+                       ec=CLR_WSTART, lw=0.7, alpha=0.9))
 
-# Truck arrival / departure labeled lines
+# Truck arrival / departure labels
 for i, t in enumerate(tk_objs):
-    tc = TRUCK_COLORS[i % len(TRUCK_COLORS)]
-    row_offset = i * 0.055
-
+    tc  = TRUCK_COLORS[i % len(TRUCK_COLORS)]
+    off = i * 0.055
     ax2.axvline(t["ai"], color=tc, lw=1.4, ls="--", zorder=4, alpha=0.85)
-    ax2.text(t["ai"] + 0.3, max_y * (0.92 - row_offset),
-             f"T{i+1} Arr", fontsize=8.5, color=tc, va="top", ha="left", fontweight="bold")
-
+    ax2.text(t["ai"] + 0.3, max_y * (0.92 - off),
+             f"T{i+1} Arr", fontsize=8.5, color=tc,
+             va="top", ha="left", fontweight="bold")
     ax2.axvline(t["di"], color=tc, lw=1.4, ls=":", zorder=4, alpha=0.85)
-    ax2.text(t["di"] + 0.3, max_y * (0.83 - row_offset),
-             f"T{i+1} Dep", fontsize=8.5, color=tc, va="top", ha="left", fontweight="bold")
+    ax2.text(t["di"] + 0.3, max_y * (0.83 - off),
+             f"T{i+1} Dep", fontsize=8.5, color=tc,
+             va="top", ha="left", fontweight="bold")
 
 # Milestone verticals + rotated labels
 for name, wk in milestones.items():
@@ -431,7 +464,7 @@ for name, wk in milestones.items():
              fontsize=9, color=color, rotation=90, va="top", ha="left",
              fontweight="bold" if is_key else "normal")
 
-# Status boxes at RG / SOP / EG (pointing to x-axis)
+# Status boxes at RG / SOP / EG
 BOX_Y = {"RG": 0.52, "SOP": 0.34, "EG": 0.18}
 for name in ("RG", "SOP", "EG"):
     s = ms_status.get(name)
@@ -453,46 +486,30 @@ for name in ("RG", "SOP", "EG"):
         annotation_clip=False,
     )
 
-# ── Dimension arrows (FIG→RG, RG→SOP, SOP→EG) ────────────────────────────────
-
+# Dimension arrows between FIG→RG, RG→SOP, SOP→EG
 DIM_PAIRS = [
     ("FIG", "RG",  ARROW_Y[0]),
     ("RG",  "SOP", ARROW_Y[1]),
     ("SOP", "EG",  ARROW_Y[2]),
 ]
-
 for ms1, ms2, arr_y in DIM_PAIRS:
     x1 = ms_idx(ms1)
     x2 = ms_idx(ms2)
     if x1 is None or x2 is None or x1 >= x2:
         continue
-
     ih_diff = max(0.0, get_cum_at(ms2) - get_cum_at(ms1))
-
-    # Vertical guide lines from data-zone top to arrow
     for xv in (x1, x2):
-        ax2.plot([xv, xv], [max_y, arr_y], color="#888888",
-                 lw=0.7, ls=":", zorder=1)
+        ax2.plot([xv, xv], [max_y, arr_y], color="#999999", lw=0.7, ls=":", zorder=1)
+    ax2.annotate("", xy=(x2, arr_y), xytext=(x1, arr_y),
+                 arrowprops=dict(arrowstyle="<->", color="#333333",
+                                 lw=1.6, mutation_scale=13),
+                 annotation_clip=False)
+    ax2.text((x1 + x2) / 2, arr_y + max_y * 0.025,
+             f"{int(round(ih_diff))} IH",
+             ha="center", va="bottom", fontsize=10,
+             fontweight="bold", color="#111111", clip_on=False)
 
-    # Double-headed arrow
-    ax2.annotate(
-        "",
-        xy=(x2, arr_y), xytext=(x1, arr_y),
-        arrowprops=dict(arrowstyle="<->", color="#333333",
-                        lw=1.6, mutation_scale=13),
-        annotation_clip=False,
-    )
-
-    # IH label above arrow
-    ax2.text(
-        (x1 + x2) / 2, arr_y + max_y * 0.025,
-        f"{int(round(ih_diff))} IH",
-        ha="center", va="bottom", fontsize=10, fontweight="bold",
-        color="#111111", clip_on=False,
-    )
-
-# ── Axes + legend ─────────────────────────────────────────────────────────────
-
+# Axes
 ax2.set_xticks(tick_pos)
 ax2.set_xticklabels(tick_lbls, rotation=60, ha="right", fontsize=9)
 ax2.set_xlim(df["idx"].min() - 1, df["idx"].max() + 4)
@@ -502,11 +519,11 @@ ax2.set_title("Weekly output detail", fontsize=11, color="#444",
 
 w_legend = [
     mpatches.Patch(facecolor=CLR_BURNUP,   alpha=0.80, label="Team output (sent IH)"),
-    Line2D([0],[0], color=CLR_WORK_GEN, lw=2,   ls="--",  label="Work available"),
-    Line2D([0],[0], color=CLR_CAPACITY, lw=1.8, ls="-.", label="Effective capacity"),
-    Line2D([0],[0], color=CLR_CAPACITY, lw=1.2, ls=":",  alpha=0.50, label="Max SE capacity"),
+    Line2D([0],[0], color=CLR_WORK_GEN, lw=2,   ls="--", label="Work available (bell curve)"),
+    Line2D([0],[0], color=CLR_CAPACITY, lw=2,   ls="-.", label="Effective capacity"),
+    Line2D([0],[0], color=CLR_FCAP,     lw=1.4, ls=":",  label="Max SE capacity"),
     mpatches.Patch(facecolor=CLR_BURNUP,   alpha=0.12, label="Truck on-site"),
-    Line2D([0],[0], color=CLR_WSTART,   lw=1.8, ls="--",  label="Work start"),
+    Line2D([0],[0], color=CLR_WSTART,   lw=1.8, ls="--", label="Work start"),
 ]
 ax2.legend(handles=w_legend, loc="upper right", fontsize=8.5,
            framealpha=0.9, edgecolor="#ddd")
