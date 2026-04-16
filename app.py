@@ -24,9 +24,14 @@ st.sidebar.divider()
 st.sidebar.header("⚙️ Simulation Mode")
 pure_capacity_mode = st.sidebar.toggle(
     "Pure Capacity Mode", 
-    value=True, 
+    value=False, 
     help="When active, all work is available at the Start Week, making SE Headcount the ONLY bottleneck. Turn off to strictly follow truck arrival dates."
 )
+
+st.sidebar.divider()
+st.sidebar.header("⚙️ Advanced Tuning")
+ramp_up_weeks = st.sidebar.slider("Capacity Ramp-Up (Weeks)", 0, 12, 4, help="Gradually scales team capacity from 0 to Max over the first N weeks.")
+frontload_prework = st.sidebar.toggle("Front-load Pre-Work", value=True, help="Make all pre-work available on Day 1 instead of pacing it evenly. (Only applies if Pure Capacity Mode is OFF)")
 
 st.sidebar.divider()
 st.sidebar.header("3. Choose the number of trucks you will receive")
@@ -201,22 +206,37 @@ data = []
 backlog = 0
 
 if pure_capacity_mode:
+    # -----------------------------------------------------
     # MODE A: PURE CAPACITY (SE Count is the only constraint)
+    # -----------------------------------------------------
     for i in range(len(df)):
         new_work = total_scope if i == start_idx else 0
-        
         pool = new_work + backlog
-        processed = min(pool, max_capacity)
+        
+        # Dynamic Ramp-up Capacity
+        current_capacity = max_capacity
+        if ramp_up_weeks > 0 and i >= start_idx and i < (start_idx + ramp_up_weeks):
+            ramp_factor = (i - start_idx + 1) / ramp_up_weeks
+            current_capacity = max_capacity * ramp_factor
+            
+        processed = min(pool, current_capacity)
         backlog = pool - processed
         
         data.append({"Index": i, "Gen": new_work, "Sent": processed, "Backlog": backlog})
 else:
+    # -----------------------------------------------------
     # MODE B: TRUCK SCHEDULE (Time is a constraint)
+    # -----------------------------------------------------
     for i in range(len(df)):
         new_work = 0
         
-        if i >= start_idx and i < first_arrival_idx:
-            new_work += rate_pre
+        # 1. Pre-work handling (Front-loaded vs Paced)
+        if frontload_prework:
+            if i == start_idx:
+                new_work += demand_pre
+        else:
+            if i >= start_idx and i < first_arrival_idx:
+                new_work += rate_pre
             
         if i in gap_indices:
             new_work += rate_post
@@ -226,7 +246,14 @@ else:
                 new_work += (t['raw_curve'][i] / t['sum_curve']) * t['volume']
 
         pool = new_work + backlog
-        processed = min(pool, max_capacity)
+        
+        # 2. Dynamic Ramp-up Capacity
+        current_capacity = max_capacity
+        if ramp_up_weeks > 0 and i >= start_idx and i < (start_idx + ramp_up_weeks):
+            ramp_factor = (i - start_idx + 1) / ramp_up_weeks
+            current_capacity = max_capacity * ramp_factor
+            
+        processed = min(pool, current_capacity)
         backlog = pool - processed
         
         data.append({"Index": i, "Gen": new_work, "Sent": processed, "Backlog": backlog})
@@ -265,7 +292,7 @@ ax.set_ylim(0, max_y * (1.3 + 0.05 * ui_truck_count))
 
 bbox = dict(boxstyle="round,pad=0.3", fc="white", ec="none", alpha=0.85)
 
-# Only show truck markers if not in pure capacity mode (optional visual cleanup)
+# Only show truck markers if not in pure capacity mode
 if not pure_capacity_mode:
     colors_truck = ['green', 'blue', 'teal', 'magenta', 'darkorange', 'purple', 'cyan', 'brown', 'crimson', 'olive']
     for t in trucks:
@@ -301,12 +328,10 @@ for i, (m_name, m_wk) in enumerate(target_milestones):
         phase_sent = comp - prev_comp
         y_pos = max_y * y_positions[i]
         
-        # Calculate percentages safely to avoid division by zero
         safe_total = max(1, total_scope)
         sent_pct = (comp / safe_total) * 100
         miss_pct = (miss / safe_total) * 100
         
-        # 1. Draw the High-visibility Status Boxes
         if miss > 0.5:
             bg_color = "#dc3545" # Crimson Red
         else:
@@ -319,7 +344,6 @@ for i, (m_name, m_wk) in enumerate(target_milestones):
                     fontsize=12, fontweight='bold', color='white',
                     bbox=dict(boxstyle="round,pad=0.5", fc=bg_color, ec='none', alpha=0.95))
         
-        # 2. Draw the Horizontal Span Line (Dimension Line)
         if prev_idx < idx:
             ax.annotate('', xy=(prev_idx, span_y_level), xytext=(idx, span_y_level),
                         arrowprops=dict(arrowstyle='<->', color='#555555', lw=1.5))
