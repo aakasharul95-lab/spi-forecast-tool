@@ -30,12 +30,13 @@ pure_capacity_mode = st.sidebar.toggle(
 
 st.sidebar.divider()
 st.sidebar.header("⚙️ Advanced Tuning")
-ramp_up_weeks = st.sidebar.slider("Capacity Ramp-Up (Weeks)", 0, 12, 4, help="Gradually scales team capacity from 0 to Max over the first N weeks.")
-frontload_prework = st.sidebar.toggle("Front-load Pre-Work", value=True, help="Make all pre-work available on Day 1 instead of pacing it evenly. (Only applies if Pure Capacity Mode is OFF)")
+frontload_prework = st.sidebar.toggle("Front-load Pre-Work", value=True, help="Make all pre-work available on Day 1 so the team instantly hits max capacity.")
+frontload_postwork = st.sidebar.toggle("Front-load Post-Work", value=True, help="Make all post-work available instantly after the final truck departs, rather than spreading it out.")
+
 delivery_profile = st.sidebar.radio(
     "Truck Delivery Profile", 
-    options=["Instant (All on Arrival)", "Gradual (Bell Curve)"],
-    help="Instant dumps all work on the arrival week, letting your SEs burn through it at max speed."
+    options=["Gradual (Bell Curve)", "Instant (All on Arrival)"],
+    help="Gradual mimics a natural ramp-up/down. Instant dumps all work on the arrival week."
 )
 
 st.sidebar.divider()
@@ -77,7 +78,7 @@ for i in range(ui_truck_count):
 st.sidebar.divider()
 st.sidebar.header("4. Phases")
 pre_work_pct = st.sidebar.slider("Pre-Work % ", 0.0, 0.5, 0.10)
-post_work_pct = st.sidebar.slider("Post-Work % ", 0.0, 0.5, 0.10, help="This work is distributed in the empty weeks BETWEEN trucks and AFTER the last truck.")
+post_work_pct = st.sidebar.slider("Post-Work % ", 0.0, 0.5, 0.10)
 
 st.sidebar.header("5. Milestones")
 fdg_week = st.sidebar.number_input("FDG Week", value=2532)
@@ -181,6 +182,7 @@ for t in trucks:
     t['volume'] = demand_trucks_total * (t['effective_weight'] / safe_denominator)
 
 first_arrival_idx = min(t['arr_idx'] for t in trucks)
+last_departure_idx = max(t['dep_idx'] for t in trucks)
 
 # --- Rates ---
 dur_pre = first_arrival_idx - start_idx
@@ -219,42 +221,38 @@ data = []
 backlog = 0
 
 if pure_capacity_mode:
-    # -----------------------------------------------------
     # MODE A: PURE CAPACITY (SE Count is the only constraint)
-    # -----------------------------------------------------
     for i in range(len(df)):
         new_work = total_scope if i == start_idx else 0
         pool = new_work + backlog
         
-        # Dynamic Ramp-up Capacity
-        current_capacity = max_capacity
-        if ramp_up_weeks > 0 and i >= start_idx and i < (start_idx + ramp_up_weeks):
-            ramp_factor = (i - start_idx + 1) / ramp_up_weeks
-            current_capacity = max_capacity * ramp_factor
-            
-        processed = min(pool, current_capacity)
+        # Team operates at full capacity always
+        processed = min(pool, max_capacity)
         backlog = pool - processed
         
         data.append({"Index": i, "Gen": new_work, "Sent": processed, "Backlog": backlog})
 else:
-    # -----------------------------------------------------
     # MODE B: TRUCK SCHEDULE (Time is a constraint)
-    # -----------------------------------------------------
     for i in range(len(df)):
         new_work = 0
         
-        # 1. Pre-work handling (Front-loaded vs Paced)
+        # 1. Pre-work handling
         if frontload_prework:
             if i == start_idx:
                 new_work += demand_pre
         else:
             if i >= start_idx and i < first_arrival_idx:
                 new_work += rate_pre
+                
+        # 2. Post-work handling
+        if frontload_postwork:
+            if i == last_departure_idx + 1:
+                new_work += demand_post
+        else:
+            if i in gap_indices:
+                new_work += rate_post
             
-        if i in gap_indices:
-            new_work += rate_post
-            
-        # 2. Truck Delivery Logic
+        # 3. Truck Delivery Logic
         for t in trucks:
             if delivery_profile == "Instant (All on Arrival)":
                 if i == t['arr_idx']:
@@ -265,13 +263,8 @@ else:
 
         pool = new_work + backlog
         
-        # 3. Dynamic Ramp-up Capacity
-        current_capacity = max_capacity
-        if ramp_up_weeks > 0 and i >= start_idx and i < (start_idx + ramp_up_weeks):
-            ramp_factor = (i - start_idx + 1) / ramp_up_weeks
-            current_capacity = max_capacity * ramp_factor
-            
-        processed = min(pool, current_capacity)
+        # Team operates at full capacity always (No artificial ramp-up limit)
+        processed = min(pool, max_capacity)
         backlog = pool - processed
         
         data.append({"Index": i, "Gen": new_work, "Sent": processed, "Backlog": backlog})
@@ -295,7 +288,7 @@ def get_metrics_at_week(wk):
 # =========================================================
 fig, ax = plt.subplots(figsize=(16, 7))
 
-# Draw the Delivery Spikes (Clean gray bars instead of lines for Instant drops)
+# Draw the Delivery Spikes
 if delivery_profile == "Instant (All on Arrival)" or pure_capacity_mode:
     ax.bar(res_df['Index'], res_df['Gen'], color='#333333', alpha=0.3, width=1.0, label='Work Generated (Drop)')
 else:
@@ -309,15 +302,12 @@ ax.axhline(max_capacity, color='red', linestyle='--', alpha=0.5, label=f'Weekly 
 
 # --- SMART Y-AXIS SCALING ---
 if scale_to_spikes:
-    # Zoom Out: Show the full height of the deliveries
     max_y = max(res_df['Gen'].max(), max_capacity)
 else:
-    # Zoom In: Ignore the massive spikes and focus on team output
     max_y = max(res_df['Sent'].max(), max_capacity)
 
 if max_y <= 0: max_y = 10
 
-# Allow breathing room for annotations
 ax.set_ylim(0, max_y * 1.5)
 
 bbox = dict(boxstyle="round,pad=0.3", fc="white", ec="none", alpha=0.85)
