@@ -39,6 +39,14 @@ delivery_profile = st.sidebar.radio(
 )
 
 st.sidebar.divider()
+st.sidebar.header("📊 Chart Settings")
+scale_to_spikes = st.sidebar.toggle(
+    "Zoom Out to Fit Delivery Spikes", 
+    value=False, 
+    help="Turn ON to see the massive delivery spikes. Turn OFF to zoom in on the team's daily capacity."
+)
+
+st.sidebar.divider()
 st.sidebar.header("3. Choose the number of trucks you will receive")
 
 num_trucks_input = st.sidebar.number_input("Number of Trucks", min_value=0.10, max_value=10.00, value=3.00, step=0.10, format="%.2f")
@@ -287,17 +295,26 @@ def get_metrics_at_week(wk):
 # =========================================================
 fig, ax = plt.subplots(figsize=(16, 7))
 
+# Draw the Delivery Spikes (Clean gray bars instead of lines for Instant drops)
+if delivery_profile == "Instant (All on Arrival)" or pure_capacity_mode:
+    ax.bar(res_df['Index'], res_df['Gen'], color='#333333', alpha=0.3, width=1.0, label='Work Generated (Drop)')
+else:
+    ax.plot(res_df['Index'], res_df['Gen'], color='#333333', linestyle='--', linewidth=3, label='Work Generated (Curve)')
+
+# Draw the Team Output
 ax.bar(res_df['Index'], res_df['Sent'], color='#005f9e', alpha=0.9, label='Team Output (Sent IH)')
-ax.plot(res_df['Index'], res_df['Gen'], color='#333333', linestyle='--', linewidth=3, label='Work Generated')
 
 # Add Capacity Line
 ax.axhline(max_capacity, color='red', linestyle='--', alpha=0.5, label=f'Weekly Capacity ({max_capacity} IH)')
 
-# --- DYNAMIC Y-AXIS SCALING FIX ---
-# Ignore the massive Day 1 pre-work spike and/or Instant Delivery spikes when calculating chart height
-normal_gen_max = res_df.loc[res_df['Index'] != start_idx, 'Sent'].max()
+# --- SMART Y-AXIS SCALING ---
+if scale_to_spikes:
+    # Zoom Out: Show the full height of the deliveries
+    max_y = max(res_df['Gen'].max(), max_capacity)
+else:
+    # Zoom In: Ignore the massive spikes and focus on team output
+    max_y = max(res_df['Sent'].max(), max_capacity)
 
-max_y = max(normal_gen_max, max_capacity)
 if max_y <= 0: max_y = 10
 
 # Allow breathing room for annotations
