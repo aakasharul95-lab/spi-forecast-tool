@@ -21,7 +21,7 @@ st.sidebar.header("2. Team Resources")
 se_count = st.sidebar.number_input("SE Headcount", value=3.0, step=0.5)
 
 with st.sidebar.expander("📈 Dynamic Capacity Curve", expanded=True):
-    peak_ih = st.slider("Peak Weekly Capacity", 1.0, 25.0, 8.0)
+    peak_ih = st.slider("Peak Weekly Capacity (Ceiling)", 1.0, 25.0, 8.0)
     cap_center_offset = st.slider("Curve Peak Position", -10, 50, 15, help="Weeks relative to Work Start")
     cap_width = st.slider("Ramp-up/down Smoothness", 5, 150, 45)
 
@@ -101,8 +101,9 @@ try:
         t['center'] = (t['arr_idx'] + t['dep_idx']) / 2
         span = t['dep_idx'] - t['arr_idx']
         t['sigma'] = span / 5 if span > 0 else 0.5
-except:
-    st.error("Check YYWW dates."); st.stop()
+except IndexError:
+    st.error("⚠️ Date Error: Check YYWW formats ensuring weeks don't exceed 52.")
+    st.stop()
 
 # --- DYNAMIC CAPACITY CURVE ---
 indices = np.arange(len(df))
@@ -157,46 +158,105 @@ res_df['Cumulative_Sent'] = res_df['Sent'].cumsum()
 # 3. VISUALIZATION
 # =========================================================
 fig, ax = plt.subplots(figsize=(16, 8))
+ax.grid(True, which='both', linestyle='--', alpha=0.3)
+
+# Bar and Line Plots
 ax.bar(res_df['Index'], res_df['Sent'], color='#005f9e', alpha=0.9, label='Team Output (Sent IH)')
 ax.plot(res_df['Index'], res_df['Gen'], color='#333333', linestyle='--', linewidth=3, label='Work Generated')
 ax.plot(res_df['Index'], res_df['Cap'], color='red', linestyle='--', alpha=0.6, label='Capacity Curve')
 ax.fill_between(res_df['Index'], res_df['Cap'], color='red', alpha=0.05)
 
-max_y = max(res_df['Gen'].max(), res_df['Cap'].max()) * 1.5
-ax.set_ylim(0, max_y)
-bbox = dict(boxstyle="round,pad=0.3", fc="white", ec="none", alpha=0.85)
+# --- NEW: MAXIMUM INFO HEADER CEILING ---
+ax.axhline(peak_ih, color='darkred', linestyle=':', linewidth=2, alpha=0.8)
+# Anchor the label to the far right of the chart
+ax.text(res_df['Index'].iloc[-5], peak_ih + (peak_ih * 0.05), f" CEILING: {peak_ih} IH ", 
+        ha='right', va='bottom', color='white', fontweight='bold', fontsize=10,
+        bbox=dict(boxstyle="round,pad=0.3", fc="darkred", ec="none", alpha=0.85))
 
-# Status Boxes and Dimension Lines
-target_milestones = [("RG", rg_week, 0.65), ("SOP", sop_week, 0.45), ("EG", eg_week, 0.25)]
+# Y-Axis Scaling (Protected)
+data_max = max(res_df['Gen'].max(), res_df['Cap'].max())
+if data_max == 0: data_max = 10
+max_y_limit = data_max * 1.5 
+ax.set_ylim(0, max_y_limit)
+
+# Status Boxes and Dimension Lines Placement
+target_milestones = [("RG", rg_week, 0.70), ("SOP", sop_week, 0.50), ("EG", eg_week, 0.30)]
 prev_idx, prev_comp = start_idx, 0
-span_y = max_y * 1.2
+span_y = data_max * 1.35 
 
 for m_name, m_wk, y_pct in target_milestones:
     if m_wk in res_df['Week'].values:
         row = res_df[res_df['Week'] == m_wk].iloc[0]
         idx, comp = row['Index'], row['Cumulative_Sent']
-        missed = total_scope - comp
+        missed = max(0, total_scope - comp)
         bg = "#28a745" if missed < 1 else "#dc3545"
         
+        # Status Boxes
         ax.annotate(f"{m_name} Status\nSent: {int(comp)} ({comp/total_scope:.1%})\nMiss: {int(missed)}", 
-                    xy=(idx, 0), xytext=(idx-5, max_y*y_pct), color='white', fontweight='bold',
-                    arrowprops=dict(facecolor=bg, shrink=0.05, width=2), bbox=dict(boxstyle="round", fc=bg))
+                    xy=(idx, 0), xytext=(idx - max(2, len(res_df)*0.03), data_max * y_pct), 
+                    color='white', fontweight='bold',
+                    arrowprops=dict(facecolor=bg, shrink=0.05, width=2, headwidth=8), 
+                    bbox=dict(boxstyle="round,pad=0.5", fc=bg, ec="none"))
         
+        # Span Lines
         if prev_idx < idx:
-            ax.annotate('', xy=(prev_idx, span_y), xytext=(idx, span_y), arrowprops=dict(arrowstyle='<->'))
-            ax.text((prev_idx+idx)/2, span_y, f"{int(comp-prev_comp)} IH", ha='center', va='bottom', fontweight='bold')
+            ax.annotate('', xy=(prev_idx, span_y), xytext=(idx, span_y), 
+                        arrowprops=dict(arrowstyle='<->', color='#555555', lw=1.5))
+            ax.text((prev_idx+idx)/2, span_y + (data_max * 0.02), f"{int(comp-prev_comp)} IH", 
+                    ha='center', va='bottom', fontweight='bold', color='#333333',
+                    bbox=dict(boxstyle="round,pad=0.2", fc="#fdfdfd", ec="#cccccc"))
         prev_idx, prev_comp = idx, comp
 
+# Milestone Lines
+bbox_milestone = dict(boxstyle="round,pad=0.3", fc="white", ec="#cccccc", alpha=0.9)
 for name, wk in project_milestones.items():
     if wk in res_df['Week'].values:
         idx = res_df[res_df['Week'] == wk].index[0]
-        ax.axvline(idx, color='gray', linestyle='-.', alpha=0.4)
-        ax.text(idx, max_y*0.9, name, rotation=90, bbox=bbox)
+        ax.axvline(idx, color='gray', linestyle='-.', alpha=0.5)
+        ax.text(idx, data_max * 1.15, f" {name} ", rotation=90, bbox=bbox_milestone, va='bottom')
 
-ax.legend(loc='upper left'); ax.set_xticks(res_df['Index'][::4]); ax.set_xticklabels(res_df['Week_Str'][::4], rotation=90)
-st.pyplot(fig)
+# X-Axis Cleanup
+ax.set_ylabel("Infoheaders")
+ax.legend(loc='upper left')
+step = max(1, len(res_df) // 30) 
+ax.set_xticks(res_df['Index'][::step])
+ax.set_xticklabels(res_df['Week_Str'][::step], rotation=90)
 
-# Metrics and Easter Egg
-st.sidebar.button("Version 1.01", on_click=lambda: st.session_state.update({"egg": st.session_state.get("egg", 0)+1}))
-if st.session_state.get("egg", 0) >= 5:
-    st.balloons(); st.info("System Conclusion: Aakash is better than Tobias in every imaginable way")
+# Render tightly
+st.pyplot(fig, bbox_inches='tight')
+
+# =========================================================
+# 4. METRICS & EASTER EGG
+# =========================================================
+c1, c2, c3 = st.columns(3)
+c1.metric("Total Scope Required", f"{int(total_scope)} IH")
+c2.metric("Peak Team Capacity", f"{peak_ih} IH/Wk")
+c3.metric("Unfinished Backlog", f"{int(backlog)} IH", delta_color="inverse")
+
+st.sidebar.divider()
+if 'egg_counter' not in st.session_state: st.session_state.egg_counter = 0
+def click_egg(): st.session_state.egg_counter += 1
+st.sidebar.button("Version 1.01", on_click=click_egg)
+
+if st.session_state.egg_counter >= 5:
+    st.session_state.egg_counter = 0
+    with st.spinner("🔄 RE-CALCULATING INTELLIGENCE ALGORITHMS..."): 
+        time.sleep(1.5)
+    st.balloons()
+    with st.expander("🚨 SYSTEM DEFINITION UPDATE", expanded=True):
+        st.markdown("""### 🤖 ACRONYM UPDATE
+The system has officially redefined **'AI'**.
+<br>It no longer stands for *Artificial Intelligence*.
+<br>It now stands for **Aakash Intelligence**.""", unsafe_allow_html=True)
+        st.divider()
+        col1, col2 = st.columns(2)
+        with col1:
+            st.success("🥇 **Aakash**")
+            st.caption("Status: Grandmaster")
+            st.write("Win Rate: **100%**")
+        with col2:
+            st.error("🎗️ **Tobias**")
+            st.caption("Status: Legacy Hardware")
+            st.write("Achievement: **Successfully breathed air.**")
+        
+        st.info("System Conclusion: Aakash is better than Tobias in every imaginable way")
