@@ -25,7 +25,7 @@ st.sidebar.header("⚙️ Simulation Mode")
 pure_capacity_mode = st.sidebar.toggle(
     "Pure Capacity Mode", 
     value=True, 
-    help="When active, all work is available at the Start Week, making SE Headcount the ONLY bottleneck. Turn off to strictly follow truck arrival dates."
+    help="When active, work is aggressively front-loaded starting at the Start Week, making SE Headcount the main bottleneck. Turn off to follow truck arrival dates."
 )
 
 st.sidebar.divider()
@@ -201,9 +201,27 @@ data = []
 backlog = 0
 
 if pure_capacity_mode:
-    # MODE A: PURE CAPACITY (SE Count is the only constraint)
+    # MODE A: AGGRESSIVE CAPACITY (Front-loaded, steep curve)
+    # Adjust 'aggressive_sigma' to make the spike tighter (lower number) or wider (higher number)
+    aggressive_sigma = 2.0  
+    # Center the peak shortly after the start week so it ramps up violently but realistically
+    aggressive_center = start_idx + 2 
+    
+    # Pre-calculate the curve to normalize it exactly to the total_scope
+    raw_curve = []
     for i in range(len(df)):
-        new_work = total_scope if i == start_idx else 0
+        # Only start generating work at or after the start index
+        if i >= start_idx:
+            raw_curve.append(norm.pdf(i, aggressive_center, aggressive_sigma))
+        else:
+            raw_curve.append(0)
+            
+    sum_curve = sum(raw_curve)
+    
+    for i in range(len(df)):
+        new_work = 0
+        if sum_curve > 0:
+            new_work = (raw_curve[i] / sum_curve) * total_scope
         
         pool = new_work + backlog
         processed = min(pool, max_capacity)
