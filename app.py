@@ -32,6 +32,11 @@ st.sidebar.divider()
 st.sidebar.header("⚙️ Advanced Tuning")
 ramp_up_weeks = st.sidebar.slider("Capacity Ramp-Up (Weeks)", 0, 12, 4, help="Gradually scales team capacity from 0 to Max over the first N weeks.")
 frontload_prework = st.sidebar.toggle("Front-load Pre-Work", value=True, help="Make all pre-work available on Day 1 instead of pacing it evenly. (Only applies if Pure Capacity Mode is OFF)")
+delivery_profile = st.sidebar.radio(
+    "Truck Delivery Profile", 
+    options=["Instant (All on Arrival)", "Gradual (Bell Curve)"],
+    help="Instant dumps all work on the arrival week, letting your SEs burn through it at max speed."
+)
 
 st.sidebar.divider()
 st.sidebar.header("3. Choose the number of trucks you will receive")
@@ -241,13 +246,18 @@ else:
         if i in gap_indices:
             new_work += rate_post
             
+        # 2. Truck Delivery Logic
         for t in trucks:
-            if t['sum_curve'] > 0:
-                new_work += (t['raw_curve'][i] / t['sum_curve']) * t['volume']
+            if delivery_profile == "Instant (All on Arrival)":
+                if i == t['arr_idx']:
+                    new_work += t['volume']
+            else:
+                if t['sum_curve'] > 0:
+                    new_work += (t['raw_curve'][i] / t['sum_curve']) * t['volume']
 
         pool = new_work + backlog
         
-        # 2. Dynamic Ramp-up Capacity
+        # 3. Dynamic Ramp-up Capacity
         current_capacity = max_capacity
         if ramp_up_weeks > 0 and i >= start_idx and i < (start_idx + ramp_up_weeks):
             ramp_factor = (i - start_idx + 1) / ramp_up_weeks
@@ -283,12 +293,15 @@ ax.plot(res_df['Index'], res_df['Gen'], color='#333333', linestyle='--', linewid
 # Add Capacity Line
 ax.axhline(max_capacity, color='red', linestyle='--', alpha=0.5, label=f'Weekly Capacity ({max_capacity} IH)')
 
-max_demand = res_df['Gen'].max()
-max_y = max(max_demand, max_capacity)
-if max_y == 0: max_y = 10
+# --- DYNAMIC Y-AXIS SCALING FIX ---
+# Ignore the massive Day 1 pre-work spike and/or Instant Delivery spikes when calculating chart height
+normal_gen_max = res_df.loc[res_df['Index'] != start_idx, 'Sent'].max()
 
-# Dynamic Y-Axis so nothing gets cut off
-ax.set_ylim(0, max_y * (1.3 + 0.05 * ui_truck_count))
+max_y = max(normal_gen_max, max_capacity)
+if max_y <= 0: max_y = 10
+
+# Allow breathing room for annotations
+ax.set_ylim(0, max_y * 1.5)
 
 bbox = dict(boxstyle="round,pad=0.3", fc="white", ec="none", alpha=0.85)
 
